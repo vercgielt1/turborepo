@@ -18,7 +18,8 @@ use turbopack_core::{
     reference_type::{EntryReferenceSubType, ReferenceType},
     resolve::{find_context_file, FindContextFileResult},
     source_asset::SourceAssetVc,
-    source_transform::{SourceTransform, SourceTransformVc},
+    source_map::{CrateMap, SourceMapVc},
+    source_transform::{SourceTransform, SourceTransformVc, SourceTransformedVc},
     virtual_asset::VirtualAssetVc,
 };
 use turbopack_ecmascript::{
@@ -92,14 +93,15 @@ impl PostCssTransformVc {
 #[turbo_tasks::value_impl]
 impl SourceTransform for PostCssTransform {
     #[turbo_tasks::function]
-    fn transform(&self, source: AssetVc) -> AssetVc {
-        PostCssTransformedAsset {
+    async fn transform(&self, original: SourceTransformedVc) -> Result<SourceTransformedVc> {
+        let transformed = PostCssTransformedAsset {
             evaluate_context: self.evaluate_context,
             execution_context: self.execution_context,
-            source,
+            source: original.await?.source,
         }
-        .cell()
-        .into()
+        .cell();
+        let source_map = transformed.process().await?.source_map;
+        Ok(SourceTransformedVc::new(transformed.into(), source_map))
     }
 }
 
@@ -132,6 +134,7 @@ impl Asset for PostCssTransformedAsset {
 #[turbo_tasks::value]
 struct ProcessPostCssResult {
     content: AssetContentVc,
+    source_map: Option<SourceMapVc>,
     assets: Vec<VirtualAssetVc>,
 }
 
@@ -204,6 +207,7 @@ impl PostCssTransformedAssetVc {
         let FindContextFileResult::Found(config_path, _) = *find_config_result.await? else {
             return Ok(ProcessPostCssResult {
                 content: this.source.content(),
+                source_map: None,
                 assets: Vec::new()
             }.cell())
         };
@@ -220,6 +224,7 @@ impl PostCssTransformedAssetVc {
         let FileContent::Content(content) = &*file.await? else {
             return Ok(ProcessPostCssResult {
                 content: AssetContent::File(FileContent::NotFound.cell()).cell(),
+                source_map: None,
                 assets: Vec::new()
             }.cell());
         };
@@ -253,15 +258,25 @@ impl PostCssTransformedAssetVc {
             // An error happened, which has already been converted into an issue.
             return Ok(ProcessPostCssResult {
                 content: AssetContent::File(FileContent::NotFound.cell()).cell(),
+                source_map: None,
                 assets: Vec::new()
             }.cell());
         };
         let processed_css: PostCssProcessingResult = parse_json_rope_with_source_context(val)
             .context("Unable to deserializate response from PostCSS transform operation")?;
-        // TODO handle SourceMap
+        let source_map = processed_css
+            .map
+            .map(|map| CrateMap::from_slice(map.as_bytes()))
+            .transpose()?
+            .map(SourceMapVc::new_regular);
         let file = File::from(processed_css.css);
         let assets = emitted_assets_to_virtual_assets(processed_css.assets);
         let content = AssetContent::File(FileContent::Content(file).cell()).cell();
-        Ok(ProcessPostCssResult { content, assets }.cell())
+        Ok(ProcessPostCssResult {
+            content,
+            source_map,
+            assets,
+        }
+        .cell())
     }
 }

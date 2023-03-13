@@ -22,6 +22,7 @@ use turbopack_core::{
         origin::{ResolveOrigin, ResolveOriginVc},
         PrimaryResolveResult,
     },
+    source_map::SourceMapVc,
 };
 
 use crate::{
@@ -49,6 +50,7 @@ fn modifier() -> StringVc {
 #[derive(Clone)]
 pub struct CssModuleAsset {
     pub source: AssetVc,
+    pub source_map: Option<SourceMapVc>,
     pub context: AssetContextVc,
     pub transforms: CssInputTransformsVc,
     pub ty: CssModuleAssetType,
@@ -58,9 +60,15 @@ pub struct CssModuleAsset {
 impl CssModuleAssetVc {
     /// Creates a new CSS asset. The CSS is treated as global CSS.
     #[turbo_tasks::function]
-    pub fn new(source: AssetVc, context: AssetContextVc, transforms: CssInputTransformsVc) -> Self {
+    pub fn new(
+        source: AssetVc,
+        source_map: Option<SourceMapVc>,
+        context: AssetContextVc,
+        transforms: CssInputTransformsVc,
+    ) -> Self {
         Self::cell(CssModuleAsset {
             source,
+            source_map,
             context,
             transforms,
             ty: CssModuleAssetType::Global,
@@ -71,11 +79,13 @@ impl CssModuleAssetVc {
     #[turbo_tasks::function]
     pub fn new_module(
         source: AssetVc,
+        source_map: Option<SourceMapVc>,
         context: AssetContextVc,
         transforms: CssInputTransformsVc,
     ) -> Self {
         Self::cell(CssModuleAsset {
             source,
+            source_map,
             context,
             transforms,
             ty: CssModuleAssetType::Module,
@@ -274,7 +284,12 @@ impl CssChunkItem for ModuleChunkItem {
 
             code_gen.emit(&stylesheet)?;
 
-            let srcmap = ParseResultSourceMap::new(source_map.clone(), srcmap).cell();
+            let srcmap = ParseResultSourceMap::new(
+                source_map.clone(),
+                srcmap,
+                self.module.await?.source_map,
+            )
+            .cell();
 
             Ok(CssChunkItemContent {
                 inner_code: code_string.into(),
