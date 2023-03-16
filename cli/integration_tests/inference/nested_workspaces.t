@@ -3,10 +3,11 @@ Setup
   $ . ${TESTDIR}/nested_workspaces_setup.sh $(pwd)/nested_workspaces
 
   $ cd $TARGET_DIR/outer && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -25,10 +26,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer/apps && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "apps" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -48,10 +50,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer/inner && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer/inner (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer/inner (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -70,10 +73,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer/inner/apps && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer/inner (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer/inner (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "apps" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -93,10 +97,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer/inner-no-turbo && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "inner-no-turbo" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -116,10 +121,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer/inner-no-turbo/apps && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "inner-no-turbo/apps" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -139,10 +145,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer-no-turbo && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer-no-turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer-no-turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -153,10 +160,11 @@ Setup
   [1]
 
   $ cd $TARGET_DIR/outer-no-turbo/apps && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer-no-turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer-no-turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "apps" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -167,10 +175,11 @@ Setup
   [1]
 
   $ cd $TARGET_DIR/outer-no-turbo/inner && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer-no-turbo/inner (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer-no-turbo/inner (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -189,10 +198,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer-no-turbo/inner/apps && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer-no-turbo/inner (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer-no-turbo/inner (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "apps" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -212,10 +222,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/outer-no-turbo/inner-no-turbo && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer-no-turbo/inner-no-turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer-no-turbo/inner-no-turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -226,10 +237,11 @@ Setup
   [1]
 
   $ cd $TARGET_DIR/outer-no-turbo/inner-no-turbo/apps && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/nested_workspaces/outer-no-turbo/inner-no-turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/nested_workspaces/outer-no-turbo/inner-no-turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "apps" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)

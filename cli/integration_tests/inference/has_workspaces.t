@@ -3,10 +3,11 @@ Setup
   $ . ${TESTDIR}/has_workspaces_setup.sh $(pwd)/has_workspaces
 
   $ cd $TARGET_DIR && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/has_workspaces (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/has_workspaces (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -25,10 +26,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/apps/web && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/has_workspaces (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/has_workspaces (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "apps/web" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -48,10 +50,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/crates && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/has_workspaces (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/has_workspaces (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "crates" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -71,10 +74,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/crates/super-crate/tests/test-package && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/has_workspaces (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/has_workspaces (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "crates/super-crate/tests/test-package" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
@@ -94,10 +98,11 @@ Setup
     Time:\s*[\.0-9]+m?s  (re)
   
   $ cd $TARGET_DIR/packages/ui-library/src && ${TURBO} run build --filter=nothing -vv
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Global turbo version: .* (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: No local turbo binary found at: .+node_modules/\.bin/turbo (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Repository Root: .*/has_workspaces (re)
-  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::shim: Running command as global turbo (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Global turbo version: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::local_turbo_state: No local turbo binary found at: .* (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Repository Root: .*/has_workspaces (re)
+  [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::state::turbo_state: Running command as global turbo (re)
   [-0-9:.TWZ+]+ \[DEBUG] turborepo_lib::cli: pkg_inference_root set to "packages/ui-library/src" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: Found go binary at "[\-\w\/]+" (re)
   [-0-9:.TWZ+]+ \[DEBUG] turbo: build tag: (go|rust) (re)
