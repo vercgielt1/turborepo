@@ -5,6 +5,7 @@ use std::{
     collections::VecDeque,
     future::Future,
     hash::{BuildHasher, BuildHasherDefault, Hash},
+    num::NonZeroUsize,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,8 +17,11 @@ use std::{
 use anyhow::{bail, Result};
 use auto_hash_map::AutoSet;
 use dashmap::{mapref::entry::Entry, DashMap};
+use lru::LruCache;
 use nohash_hasher::BuildNoHashHasher;
+use prehash::{Passthru, Prehashed, Prehasher};
 use rustc_hash::FxHasher;
+use thread_local::ThreadLocal;
 use tokio::task::futures::TaskLocalFuture;
 use tracing::{trace_span, Instrument};
 use turbo_tasks::{
@@ -42,6 +46,21 @@ use crate::{
     },
 };
 
+type ThreadLocalTaskCache<K> =
+    ThreadLocal<RefCell<LruCache<K, TaskId, BuildHasherDefault<Passthru>>>>;
+
+fn create_thread_local_task_cache<K: Hash + Eq + Send>(
+) -> RefCell<LruCache<K, TaskId, BuildHasherDefault<Passthru>>> {
+    RefCell::new(LruCache::with_hasher(
+        NonZeroUsize::new(4096).unwrap(),
+        Default::default(),
+    ))
+}
+
+fn prehash_task_type(task_type: PersistentTaskType) -> Prehashed<PersistentTaskType> {
+    BuildHasherDefault::<FxHasher>::prehash(&Default::default(), task_type)
+}
+
 pub struct MemoryBackend {
     memory_tasks: NoMoveVec<Task, 13>,
     memory_task_scopes: NoMoveVec<TaskScope>,
@@ -49,7 +68,8 @@ pub struct MemoryBackend {
     pub(crate) initial_scope: TaskScopeId,
     backend_jobs: NoMoveVec<Job>,
     backend_job_id_factory: IdFactory<BackendJobId>,
-    task_cache: DashMap<Arc<PersistentTaskType>, TaskId, BuildHasherDefault<FxHasher>>,
+    thread_local_task_cache: ThreadLocalTaskCache<Arc<Prehashed<PersistentTaskType>>>,
+    task_cache: DashMap<Arc<Prehashed<PersistentTaskType>>, TaskId, BuildHasherDefault<Passthru>>,
     memory_limit: usize,
     gc_queue: Option<GcQueue>,
     idle_gc_active: AtomicBool,
@@ -77,6 +97,7 @@ impl MemoryBackend {
             initial_scope,
             backend_jobs: NoMoveVec::new(),
             backend_job_id_factory: IdFactory::new(),
+            thread_local_task_cache: ThreadLocal::new(),
             task_cache: DashMap::default(),
             memory_limit,
             gc_queue: (memory_limit != usize::MAX).then(GcQueue::new),
@@ -336,9 +357,10 @@ impl MemoryBackend {
         })
     }
 
-    fn insert_and_connect_fresh_task<K: Eq + Hash, H: BuildHasher + Clone>(
+    fn insert_and_connect_fresh_task<K: Eq + Hash + Clone + Send, H: BuildHasher + Clone>(
         &self,
         parent_task: TaskId,
+        thread_local_task_cache: &ThreadLocalTaskCache<K>,
         task_cache: &DashMap<K, TaskId, H>,
         key: K,
         new_id: Unused<TaskId>,
@@ -352,7 +374,7 @@ impl MemoryBackend {
         if root_scoped {
             task.make_root_scoped(self, turbo_tasks);
         }
-        let result_task = match task_cache.entry(key) {
+        let result_task = match task_cache.entry(key.clone()) {
             Entry::Vacant(entry) => {
                 // This is the most likely case
                 entry.insert(new_id);
@@ -368,13 +390,20 @@ impl MemoryBackend {
                 *entry.get()
             }
         };
+        {
+            let mut cache = thread_local_task_cache
+                .get_or(create_thread_local_task_cache)
+                .borrow_mut();
+            cache.put(key, result_task);
+        }
         self.connect_task_child(parent_task, result_task, turbo_tasks);
         result_task
     }
 
-    fn lookup_and_connect_task<K: Hash + Eq, Q, H: BuildHasher + Clone>(
+    fn lookup_and_connect_task<K: Hash + Eq + Send, Q, H: BuildHasher + Clone>(
         &self,
         parent_task: TaskId,
+        thread_local_task_cache: &ThreadLocalTaskCache<K>,
         task_cache: &DashMap<K, TaskId, H>,
         key: &Q,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
@@ -383,11 +412,16 @@ impl MemoryBackend {
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        task_cache.get(key).map(|task| {
-            self.connect_task_child(parent_task, *task, turbo_tasks);
-
-            *task
-        })
+        let mut cache = thread_local_task_cache
+            .get_or(create_thread_local_task_cache)
+            .borrow_mut();
+        cache
+            .get(key)
+            .map(|task| *task)
+            .or(task_cache.get(key).map(|task| *task))
+            .inspect(|task| {
+                self.connect_task_child(parent_task, *task, turbo_tasks);
+            })
     }
 }
 
@@ -653,20 +687,26 @@ impl Backend for MemoryBackend {
 
     fn get_or_create_persistent_task(
         &self,
-        mut task_type: PersistentTaskType,
+        task_type: PersistentTaskType,
         parent_task: TaskId,
         turbo_tasks: &dyn TurboTasksBackendApi<MemoryBackend>,
     ) -> TaskId {
-        if let Some(task) =
-            self.lookup_and_connect_task(parent_task, &self.task_cache, &task_type, turbo_tasks)
-        {
+        let task_type = prehash_task_type(task_type);
+        if let Some(task) = self.lookup_and_connect_task(
+            parent_task,
+            &self.thread_local_task_cache,
+            &self.task_cache,
+            &task_type,
+            turbo_tasks,
+        ) {
             // fast pass without creating a new task
             task
         } else {
             // It's important to avoid overallocating memory as this will go into the task
             // cache and stay there forever. We can to be as small as possible.
+            let (mut task_type, task_type_hash) = Prehashed::into_parts(task_type);
             task_type.shrink_to_fit();
-            let task_type = Arc::new(task_type);
+            let task_type = Arc::new(Prehashed::new(task_type, task_type_hash));
             // slow pass with key lock
             let id = turbo_tasks.get_fresh_task_id();
             let task = Task::new_persistent(
@@ -678,6 +718,7 @@ impl Backend for MemoryBackend {
             );
             self.insert_and_connect_fresh_task(
                 parent_task,
+                &self.thread_local_task_cache,
                 &self.task_cache,
                 task_type,
                 id,

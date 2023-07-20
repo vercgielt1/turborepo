@@ -21,6 +21,7 @@ use anyhow::Result;
 use auto_hash_map::{AutoMap, AutoSet};
 use nohash_hasher::BuildNoHashHasher;
 use parking_lot::{Mutex, RwLock};
+use prehash::Prehashed;
 use stats::TaskStats;
 use tokio::task_local;
 use turbo_tasks::{
@@ -105,7 +106,7 @@ enum TaskType {
     ReadTaskCollectibles(Box<ReadTaskCollectiblesTaskType>),
 
     /// A normal persistent task
-    Persistent(Arc<PersistentTaskType>),
+    Persistent(Arc<Prehashed<PersistentTaskType>>),
 }
 
 enum TaskTypeForDescription {
@@ -113,7 +114,7 @@ enum TaskTypeForDescription {
     Once,
     ReadTaskCollectibles(TraitTypeId),
     ReadScopeCollectibles(TraitTypeId),
-    Persistent(Arc<PersistentTaskType>),
+    Persistent(Arc<Prehashed<PersistentTaskType>>),
 }
 
 impl TaskTypeForDescription {
@@ -520,7 +521,7 @@ fn should_optimize_to_root_scoped(optimization_counter: usize, children_count: u
 impl Task {
     pub(crate) fn new_persistent(
         id: TaskId,
-        task_type: Arc<PersistentTaskType>,
+        task_type: Arc<Prehashed<PersistentTaskType>>,
         stats_type: StatsType,
     ) -> Self {
         let ty = TaskType::Persistent(task_type);
@@ -625,7 +626,7 @@ impl Task {
 
     pub(crate) fn get_function_name(&self) -> Option<&'static str> {
         if let TaskType::Persistent(ty) = &self.ty {
-            match &**ty {
+            match &***ty {
                 PersistentTaskType::Native(native_fn, _)
                 | PersistentTaskType::ResolveNative(native_fn, _) => {
                     return Some(&registry::get_function(*native_fn).name);
@@ -654,7 +655,7 @@ impl Task {
                 id,
                 registry::get_trait(*trait_type_id).name
             ),
-            TaskTypeForDescription::Persistent(ty) => match &**ty {
+            TaskTypeForDescription::Persistent(ty) => match &***ty {
                 PersistentTaskType::Native(native_fn, _) => {
                     format!("[{}] {}", id, registry::get_function(*native_fn).name)
                 }
@@ -872,7 +873,7 @@ impl Task {
                     turbo_tasks.pin(),
                 ))
             }
-            TaskType::Persistent(ty) => match &**ty {
+            TaskType::Persistent(ty) => match &***ty {
                 PersistentTaskType::Native(native_fn, inputs) => {
                     let future = if let PrepareTaskType::Native(bound_fn) = &state.prepared_type {
                         bound_fn()
@@ -1953,7 +1954,7 @@ impl Task {
                 trait_type,
                 ..
             }) => StatsTaskType::ReadCollectibles(*trait_type),
-            TaskType::Persistent(ty) => match &**ty {
+            TaskType::Persistent(ty) => match &***ty {
                 PersistentTaskType::Native(f, _) => StatsTaskType::Native(*f),
                 PersistentTaskType::ResolveNative(f, _) => StatsTaskType::ResolveNative(*f),
                 PersistentTaskType::ResolveTrait(t, n, _) => {
@@ -1985,7 +1986,7 @@ impl Task {
             }
         }
         if let TaskType::Persistent(ty) = &self.ty {
-            match &**ty {
+            match &***ty {
                 PersistentTaskType::Native(_, inputs)
                 | PersistentTaskType::ResolveNative(_, inputs)
                 | PersistentTaskType::ResolveTrait(_, _, inputs) => {
