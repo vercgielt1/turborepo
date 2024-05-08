@@ -90,7 +90,7 @@ impl From<turborepo_api_client::Error> for CacheError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy, Serialize)]
 pub enum CacheSource {
     Local,
     Remote,
