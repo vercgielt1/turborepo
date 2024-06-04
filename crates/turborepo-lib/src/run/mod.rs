@@ -68,6 +68,10 @@ pub struct Run {
 }
 
 impl Run {
+    pub fn opts(&self) -> &Opts {
+        &self.opts
+    }
+
     fn has_persistent_tasks(&self) -> bool {
         self.engine.has_persistent_tasks
     }

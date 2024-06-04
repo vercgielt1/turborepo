@@ -39,6 +39,9 @@ pub enum Error {
     Generate(#[from] generate::Error),
     #[error(transparent)]
     #[diagnostic(transparent)]
+    Info(#[from] crate::info::Error),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
     Prune(#[from] prune::Error),
     #[error(transparent)]
     PackageJson(#[from] turborepo_repository::package_json::Error),
