@@ -23,11 +23,21 @@ function defineProp(obj, name1, options) {
         value: "Module"
     });
     for(const key in getters){
-        defineProp(exports, key, {
-            get: getters[key],
-            enumerable: true
-        });
+        const item = getters[key];
+        if (Array.isArray(item)) {
+            defineProp(exports, key, {
+                get: item[0],
+                set: item[1],
+                enumerable: true
+            });
+        } else {
+            defineProp(exports, key, {
+                get: item,
+                enumerable: true
+            });
+        }
     }
+    Object.seal(exports);
 }
 /**
  * Makes the module an ESM with exports
@@ -109,6 +119,15 @@ function createGetter(obj, key) {
     esm(ns, getters);
     return ns;
 }
+function createNS(raw) {
+    if (typeof raw === "function") {
+        return function(...args) {
+            return raw.apply(this, args);
+        };
+    } else {
+        return Object.create(null);
+    }
+}
 function esmImport(sourceModule, id) {
     const module = getOrInstantiateModuleFromParent(id, sourceModule);
     if (module.error) throw module.error;
@@ -116,7 +135,7 @@ function esmImport(sourceModule, id) {
     if (module.namespaceObject) return module.namespaceObject;
     // only ESM can be an async module, so we don't need to worry about exports being a promise here.
     const raw = module.exports;
-    return module.namespaceObject = interopEsm(raw, {}, raw && raw.__esModule);
+    return module.namespaceObject = interopEsm(raw, createNS(raw), raw && raw.__esModule);
 }
 // Add a simple runtime require so that environments without one can still pass
 // `typeof require` CommonJS checks so that exports are correctly registered.
@@ -184,9 +203,10 @@ function createPromise() {
 const turbopackQueues = Symbol("turbopack queues");
 const turbopackExports = Symbol("turbopack exports");
 const turbopackError = Symbol("turbopack error");
+let QueueStatus;
 function resolveQueue(queue) {
-    if (queue && !queue.resolved) {
-        queue.resolved = true;
+    if (queue && queue.status !== 1) {
+        queue.status = 1;
         queue.forEach((fn)=>fn.queueCount--);
         queue.forEach((fn)=>fn.queueCount-- ? fn.queueCount++ : fn());
     }
@@ -197,7 +217,7 @@ function wrapDeps(deps) {
             if (isAsyncModuleExt(dep)) return dep;
             if (isPromise(dep)) {
                 const queue = Object.assign([], {
-                    resolved: false
+                    status: 0
                 });
                 const obj = {
                     [turbopackExports]: {},
@@ -213,30 +233,39 @@ function wrapDeps(deps) {
                 return obj;
             }
         }
-        const ret = {
+        return {
             [turbopackExports]: dep,
             [turbopackQueues]: ()=>{}
         };
-        return ret;
     });
 }
 function asyncModule(module, body, hasAwait) {
     const queue = hasAwait ? Object.assign([], {
-        resolved: true
+        status: -1
     }) : undefined;
     const depQueues = new Set();
-    ensureDynamicExports(module, module.exports);
-    const exports = module.exports;
     const { resolve, reject, promise: rawPromise } = createPromise();
     const promise = Object.assign(rawPromise, {
-        [turbopackExports]: exports,
+        [turbopackExports]: module.exports,
         [turbopackQueues]: (fn)=>{
             queue && fn(queue);
             depQueues.forEach(fn);
             promise["catch"](()=>{});
         }
     });
-    module.exports = module.namespaceObject = promise;
+    const attributes = {
+        get () {
+            return promise;
+        },
+        set (v) {
+            // Calling `esmExport` leads to this.
+            if (v !== promise) {
+                promise[turbopackExports] = v;
+            }
+        }
+    };
+    Object.defineProperty(module, "exports", attributes);
+    Object.defineProperty(module, "namespaceObject", attributes);
     function handleAsyncDependencies(deps) {
         const currentDeps = wrapDeps(deps);
         const getResult = ()=>currentDeps.map((d)=>{
@@ -250,7 +279,7 @@ function asyncModule(module, body, hasAwait) {
         function fnQueue(q) {
             if (q !== queue && !depQueues.has(q)) {
                 depQueues.add(q);
-                if (q && !q.resolved) {
+                if (q && q.status === 0) {
                     fn.queueCount++;
                     q.push(fn);
                 }
@@ -263,13 +292,13 @@ function asyncModule(module, body, hasAwait) {
         if (err) {
             reject(promise[turbopackError] = err);
         } else {
-            resolve(exports);
+            resolve(promise[turbopackExports]);
         }
         resolveQueue(queue);
     }
     body(handleAsyncDependencies, asyncResult);
-    if (queue) {
-        queue.resolved = false;
+    if (queue && queue.status === -1) {
+        queue.status = 0;
     }
 }
 /**
@@ -299,7 +328,7 @@ relativeURL.prototype = URL.prototype;
 /// <reference path="../shared/runtime-utils.ts" />
 /// A 'base' utilities to support runtime can have externals.
 /// Currently this is for node.js / edge runtime both.
-/// If a fn requires node.js specific behavior it should be placed in `node-external-utils` instead.
+/// If a fn requires node.js specific behavior, it should be placed in `node-external-utils` instead.
 async function externalImport(id) {
     let raw;
     try {
@@ -312,7 +341,7 @@ async function externalImport(id) {
         throw new Error(`Failed to load external module ${id}: ${err}`);
     }
     if (raw && raw.__esModule && raw.default && "default" in raw.default) {
-        return interopEsm(raw.default, {}, true);
+        return interopEsm(raw.default, createNS(raw), true);
     }
     return raw;
 }
@@ -330,7 +359,7 @@ function externalRequire(id, esm = false) {
     if (!esm || raw.__esModule) {
         return raw;
     }
-    return interopEsm(raw, {}, true);
+    return interopEsm(raw, createNS(raw), true);
 }
 externalRequire.resolve = (id, options)=>{
     return require.resolve(id, options);

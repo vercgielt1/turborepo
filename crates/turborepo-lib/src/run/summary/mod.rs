@@ -37,7 +37,7 @@ use self::{
 use super::task_id::TaskId;
 use crate::{
     cli,
-    cli::DryRunMode,
+    cli::{DryRunMode, EnvMode},
     engine::Engine,
     opts::RunOpts,
     run::summary::{
@@ -83,26 +83,6 @@ enum RunType {
     DryJson,
 }
 
-// Can't reuse `cli::EnvMode` because the serialization
-// is different (lowercase vs uppercase)
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EnvMode {
-    Infer,
-    Loose,
-    Strict,
-}
-
-impl From<cli::EnvMode> for EnvMode {
-    fn from(env_mode: cli::EnvMode) -> Self {
-        match env_mode {
-            cli::EnvMode::Infer => EnvMode::Infer,
-            cli::EnvMode::Loose => EnvMode::Loose,
-            cli::EnvMode::Strict => EnvMode::Strict,
-        }
-    }
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary<'a> {
@@ -114,7 +94,7 @@ pub struct RunSummary<'a> {
     global_hash_summary: GlobalHashSummary<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<ExecutionSummary<'a>>,
-    packages: Vec<PackageName>,
+    packages: Vec<&'a PackageName>,
     env_mode: EnvMode,
     framework_inference: bool,
     tasks: Vec<TaskSummary>,
@@ -202,7 +182,7 @@ impl RunTracker {
         exit_code: i32,
         end_time: DateTime<Local>,
         run_opts: &'a RunOpts,
-        packages: HashSet<PackageName>,
+        packages: &'a HashSet<PackageName>,
         global_hash_summary: GlobalHashSummary<'a>,
         global_env_mode: EnvMode,
         task_factory: TaskSummaryFactory<'a>,
@@ -237,7 +217,7 @@ impl RunTracker {
             id: Ksuid::new(None, None),
             version: RUN_SUMMARY_SCHEMA_VERSION.to_string(),
             turbo_version: self.version,
-            packages: packages.into_iter().sorted().collect(),
+            packages: packages.iter().sorted().collect(),
             execution: Some(execution_summary),
             env_mode: global_env_mode,
             framework_inference: run_opts.framework_inference,
@@ -272,12 +252,13 @@ impl RunTracker {
         repo_root: &'a AbsoluteSystemPath,
         package_inference_root: Option<&AnchoredSystemPath>,
         run_opts: &'a RunOpts,
-        packages: HashSet<PackageName>,
+        packages: &'a HashSet<PackageName>,
         global_hash_summary: GlobalHashSummary<'a>,
         global_env_mode: cli::EnvMode,
         engine: &'a Engine,
         hash_tracker: TaskHashTracker,
         env_at_execution_start: &'a EnvironmentVariableMap,
+        has_experimental_ui: bool,
     ) -> Result<(), Error> {
         let end_time = Local::now();
 
@@ -299,13 +280,13 @@ impl RunTracker {
                 run_opts,
                 packages,
                 global_hash_summary,
-                global_env_mode.into(),
+                global_env_mode,
                 task_factory,
             )
             .await?;
 
         run_summary
-            .finish(end_time, exit_code, pkg_dep_graph, ui)
+            .finish(end_time, exit_code, pkg_dep_graph, ui, has_experimental_ui)
             .await
     }
 
@@ -380,6 +361,7 @@ impl<'a> RunSummary<'a> {
         exit_code: i32,
         pkg_dep_graph: &PackageGraph,
         ui: UI,
+        has_experimental_ui: bool,
     ) -> Result<(), Error> {
         if matches!(self.run_type, RunType::DryJson | RunType::DryText) {
             return self.close_dry_run(pkg_dep_graph, ui);
@@ -391,10 +373,12 @@ impl<'a> RunSummary<'a> {
             }
         }
 
-        if let Some(execution) = &self.execution {
-            let path = self.get_path();
-            let failed_tasks = self.get_failed_tasks();
-            execution.print(ui, path, failed_tasks);
+        if !has_experimental_ui {
+            if let Some(execution) = &self.execution {
+                let path = self.get_path();
+                let failed_tasks = self.get_failed_tasks();
+                execution.print(ui, path, failed_tasks);
+            }
         }
 
         if let Some(spaces_client_handle) = self.spaces_client_handle.take() {
@@ -468,7 +452,7 @@ impl<'a> RunSummary<'a> {
                 }
                 let dir = pkg_dep_graph
                     .package_info(pkg)
-                    .ok_or_else(|| Error::MissingWorkspace(pkg.clone()))?
+                    .ok_or_else(|| Error::MissingWorkspace((*pkg).to_owned()))?
                     .package_path();
 
                 writeln!(tab_writer, "{}\t{}", pkg, dir)?;
@@ -494,16 +478,6 @@ impl<'a> RunSummary<'a> {
             GREY,
             "  Global Cache Key\t=\t{}",
             self.global_hash_summary.root_key
-        )?;
-        cwriteln!(
-            tab_writer,
-            ui,
-            GREY,
-            "  Global .env Files Considered\t=\t{}",
-            self.global_hash_summary
-                .global_dot_env
-                .unwrap_or_default()
-                .len()
         )?;
         cwriteln!(
             tab_writer,
@@ -563,6 +537,20 @@ impl<'a> RunSummary<'a> {
                 .as_deref()
                 .unwrap_or_default()
                 .join(", ")
+        )?;
+        cwriteln!(
+            tab_writer,
+            ui,
+            GREY,
+            "  Engines Values\t=\t{}",
+            self.global_hash_summary
+                .engines
+                .as_ref()
+                .map(|engines| engines
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .join(", "))
+                .unwrap_or_default()
         )?;
 
         tab_writer.flush()?;
@@ -656,16 +644,6 @@ impl<'a> RunSummary<'a> {
                 GREY,
                 "  Inputs Files Considered\t=\t{}",
                 task.shared.inputs.len()
-            )?;
-            cwriteln!(
-                tab_writer,
-                ui,
-                GREY,
-                "  .env Files Considered\t=\t{}",
-                task.shared
-                    .dot_env
-                    .as_ref()
-                    .map_or(0, |dot_env| dot_env.len())
             )?;
 
             cwriteln!(

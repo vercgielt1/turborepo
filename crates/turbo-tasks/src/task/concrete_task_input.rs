@@ -16,7 +16,7 @@ use crate::{
     id::{FunctionId, TraitTypeId},
     magic_any::MagicAny,
     manager::{read_task_cell, read_task_output},
-    registry, turbo_tasks, CellId, RawVc, TaskId, TraitType, ValueTypeId,
+    registry, turbo_tasks, CellId, RawVc, RcStr, TaskId, TraitType, ValueTypeId,
 };
 
 #[derive(Clone)]
@@ -37,10 +37,13 @@ impl Hash for SharedReference {
     }
 }
 impl PartialEq for SharedReference {
+    // Must compare with PartialEq rather than std::ptr::addr_eq since the latter
+    // only compares their addresses.
+    #[allow(ambiguous_wide_pointer_comparisons)]
     fn eq(&self, other: &Self) -> bool {
-        PartialEq::eq(
-            &(&*self.1 as *const (dyn Any + Send + Sync)),
-            &(&*other.1 as *const (dyn Any + Send + Sync)),
+        std::ptr::addr_eq(
+            &*self.1 as *const (dyn Any + Send + Sync),
+            &*other.1 as *const (dyn Any + Send + Sync),
         )
     }
 }
@@ -53,8 +56,8 @@ impl PartialOrd for SharedReference {
 impl Ord for SharedReference {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         Ord::cmp(
-            &(&*self.1 as *const (dyn Any + Send + Sync)),
-            &(&*other.1 as *const (dyn Any + Send + Sync)),
+            &(&*self.1 as *const (dyn Any + Send + Sync)).cast::<()>(),
+            &(&*other.1 as *const (dyn Any + Send + Sync)).cast::<()>(),
         )
     }
 }
@@ -327,7 +330,7 @@ pub enum ConcreteTaskInput {
     TaskOutput(TaskId),
     TaskCell(TaskId, CellId),
     List(Vec<ConcreteTaskInput>),
-    String(String),
+    String(RcStr),
     Bool(bool),
     Usize(usize),
     I8(i8),

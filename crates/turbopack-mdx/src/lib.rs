@@ -2,8 +2,8 @@
 #![feature(arbitrary_self_types)]
 
 use anyhow::{anyhow, Context, Result};
-use mdxjs::{compile, Options};
-use turbo_tasks::{Value, ValueDefault, Vc};
+use mdxjs::{compile, MdxParseOptions, Options};
+use turbo_tasks::{RcStr, Value, ValueDefault, Vc};
 use turbo_tasks_fs::{rope::Rope, File, FileContent, FileSystemPath};
 use turbopack_core::{
     asset::{Asset, AssetContent},
@@ -19,38 +19,54 @@ use turbopack_core::{
 use turbopack_ecmascript::{
     chunk::{
         EcmascriptChunkItem, EcmascriptChunkItemContent, EcmascriptChunkPlaceable,
-        EcmascriptChunkType, EcmascriptChunkingContext, EcmascriptExports,
+        EcmascriptChunkType, EcmascriptExports,
     },
     references::AnalyzeEcmascriptModuleResultBuilder,
     AnalyzeEcmascriptModuleResult, EcmascriptInputTransforms, EcmascriptModuleAsset,
-    EcmascriptModuleAssetType,
+    EcmascriptModuleAssetType, EcmascriptOptions,
 };
 
 #[turbo_tasks::function]
-fn modifier() -> Vc<String> {
-    Vc::cell("mdx".to_string())
+fn modifier() -> Vc<RcStr> {
+    Vc::cell("mdx".into())
+}
+
+#[turbo_tasks::value(shared)]
+#[derive(PartialOrd, Ord, Hash, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum MdxParseConstructs {
+    Commonmark,
+    Gfm,
 }
 
 /// Subset of mdxjs::Options to allow to inherit turbopack's jsx-related configs
-/// into mdxjs.
+/// into mdxjs. This is thin, near straightforward subset of mdxjs::Options to
+/// enable turbo tasks.
 #[turbo_tasks::value(shared)]
 #[derive(PartialOrd, Ord, Hash, Debug, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct MdxTransformOptions {
-    pub development: bool,
-    pub preserve_jsx: bool,
-    pub jsx_runtime: Option<String>,
-    pub jsx_import_source: Option<String>,
-    pub provider_import_source: Option<String>,
+    pub development: Option<bool>,
+    pub jsx: Option<bool>,
+    pub jsx_runtime: Option<RcStr>,
+    pub jsx_import_source: Option<RcStr>,
+    /// The path to a module providing Components to mdx modules.
+    /// The provider must export a useMDXComponents, which is called to access
+    /// an object of components.
+    pub provider_import_source: Option<RcStr>,
+    /// Determines how to parse mdx contents.
+    pub mdx_type: Option<MdxParseConstructs>,
 }
 
 impl Default for MdxTransformOptions {
     fn default() -> Self {
         Self {
-            development: true,
-            preserve_jsx: false,
+            development: Some(true),
+            jsx: Some(false),
             jsx_runtime: None,
             jsx_import_source: None,
             provider_import_source: None,
+            mdx_type: Some(MdxParseConstructs::Commonmark),
         }
     }
 }
@@ -76,6 +92,7 @@ pub struct MdxModuleAsset {
     asset_context: Vc<Box<dyn AssetContext>>,
     transforms: Vc<EcmascriptInputTransforms>,
     options: Vc<MdxTransformOptions>,
+    ecmascript_options: Vc<EcmascriptOptions>,
 }
 
 /// MDX components should be treated as normal j|tsx components to analyze
@@ -112,15 +129,24 @@ async fn into_ecmascript_module_asset(
         None
     };
 
+    let parse_options = match transform_options.mdx_type {
+        Some(MdxParseConstructs::Gfm) => MdxParseOptions::gfm(),
+        _ => MdxParseOptions::default(),
+    };
+
     let options = Options {
-        development: transform_options.development,
-        provider_import_source: transform_options.provider_import_source.clone(),
-        jsx: transform_options.preserve_jsx, // true means 'preserve' jsx syntax.
+        parse: parse_options,
+        development: transform_options.development.unwrap_or(false),
+        provider_import_source: transform_options
+            .provider_import_source
+            .clone()
+            .map(RcStr::into_owned),
+        jsx: transform_options.jsx.unwrap_or(false), // true means 'preserve' jsx syntax.
         jsx_runtime,
         jsx_import_source: transform_options
             .jsx_import_source
-            .as_ref()
-            .map(|s| s.into()),
+            .clone()
+            .map(RcStr::into_owned),
         filepath: Some(this.source.ident().path().await?.to_string()),
         ..Default::default()
     };
@@ -140,7 +166,7 @@ async fn into_ecmascript_module_asset(
             analyze_types: false,
         }),
         this.transforms,
-        Value::new(Default::default()),
+        this.ecmascript_options,
         this.asset_context.compile_time_info(),
     ))
 }
@@ -153,12 +179,14 @@ impl MdxModuleAsset {
         asset_context: Vc<Box<dyn AssetContext>>,
         transforms: Vc<EcmascriptInputTransforms>,
         options: Vc<MdxTransformOptions>,
+        ecmascript_options: Vc<EcmascriptOptions>,
     ) -> Vc<Self> {
         Self::cell(MdxModuleAsset {
             source,
             asset_context,
             transforms,
             options,
+            ecmascript_options,
         })
     }
 
@@ -208,12 +236,6 @@ impl ChunkableModule for MdxModuleAsset {
         self: Vc<Self>,
         chunking_context: Vc<Box<dyn ChunkingContext>>,
     ) -> Result<Vc<Box<dyn turbopack_core::chunk::ChunkItem>>> {
-        let chunking_context =
-            Vc::try_resolve_downcast::<Box<dyn EcmascriptChunkingContext>>(chunking_context)
-                .await?
-                .context(
-                    "chunking context must impl EcmascriptChunkingContext to use MdxModuleAsset",
-                )?;
         Ok(Vc::upcast(MdxChunkItem::cell(MdxChunkItem {
             module: self,
             chunking_context,
@@ -245,7 +267,7 @@ impl ResolveOrigin for MdxModuleAsset {
 #[turbo_tasks::value]
 struct MdxChunkItem {
     module: Vc<MdxModuleAsset>,
-    chunking_context: Vc<Box<dyn EcmascriptChunkingContext>>,
+    chunking_context: Vc<Box<dyn ChunkingContext>>,
 }
 
 #[turbo_tasks::value_impl]
@@ -281,7 +303,7 @@ impl ChunkItem for MdxChunkItem {
 #[turbo_tasks::value_impl]
 impl EcmascriptChunkItem for MdxChunkItem {
     #[turbo_tasks::function]
-    fn chunking_context(&self) -> Vc<Box<dyn EcmascriptChunkingContext>> {
+    fn chunking_context(&self) -> Vc<Box<dyn ChunkingContext>> {
         self.chunking_context
     }
 

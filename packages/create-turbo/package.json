@@ -1,9 +1,9 @@
 {
   "name": "create-turbo",
-  "version": "1.13.3-canary.0",
+  "version": "2.0.4",
   "description": "Create a new Turborepo",
   "homepage": "https://turbo.build/repo",
-  "license": "MPL-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/vercel/turbo",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "chalk": "4.1.2",
-    "commander": "^10.0.0",
+    "commander": "^11.0.0",
     "fs-extra": "^11.1.1",
     "inquirer": "^8.0.0",
     "proxy-agent": "^6.2.2",

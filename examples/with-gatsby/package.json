@@ -2,10 +2,6 @@
   "name": "with-gatsby",
   "version": "0.0.0",
   "private": true,
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
@@ -15,10 +11,10 @@
   "devDependencies": {
     "eslint": "^8.57.0",
     "prettier": "^3.2.5",
-    "turbo": "^1.12.4"
+    "turbo": "^2.0.3"
   },
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "pnpm@8.9.0"
+  "packageManager": "pnpm@8.15.6"
 }

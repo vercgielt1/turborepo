@@ -7,7 +7,6 @@ pub(crate) mod containment_tree;
 pub(crate) mod data;
 pub(crate) mod evaluate;
 pub mod optimize;
-pub(crate) mod passthrough_asset;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -25,17 +24,18 @@ use turbo_tasks::{
     debug::ValueDebugFormat,
     graph::{AdjacencyMap, GraphTraversal, GraphTraversalResult, Visit, VisitControlFlow},
     trace::TraceRawVcs,
-    ReadRef, TaskInput, TryFlatJoinIterExt, TryJoinIterExt, Upcast, ValueToString, Vc,
+    RcStr, ReadRef, TaskInput, TryFlatJoinIterExt, TryJoinIterExt, Upcast, ValueToString, Vc,
 };
 use turbo_tasks_fs::FileSystemPath;
 use turbo_tasks_hash::DeterministicHash;
 
 use self::{availability_info::AvailabilityInfo, available_chunk_items::AvailableChunkItems};
 pub use self::{
-    chunking_context::{ChunkGroupResult, ChunkingContext, ChunkingContextExt, MinifyType},
+    chunking_context::{
+        ChunkGroupResult, ChunkingContext, ChunkingContextExt, EntryChunkGroupResult, MinifyType,
+    },
     data::{ChunkData, ChunkDataOption, ChunksData},
     evaluate::{EvaluatableAsset, EvaluatableAssetExt, EvaluatableAssets},
-    passthrough_asset::PassthroughModule,
 };
 use crate::{
     asset::Asset,
@@ -52,7 +52,7 @@ use crate::{
 #[serde(untagged)]
 pub enum ModuleId {
     Number(u32),
-    String(String),
+    String(RcStr),
 }
 
 impl Display for ModuleId {
@@ -67,8 +67,8 @@ impl Display for ModuleId {
 #[turbo_tasks::value_impl]
 impl ValueToString for ModuleId {
     #[turbo_tasks::function]
-    fn to_string(&self) -> Vc<String> {
-        Vc::cell(self.to_string())
+    fn to_string(&self) -> Vc<RcStr> {
+        Vc::cell(self.to_string().into())
     }
 }
 
@@ -76,7 +76,7 @@ impl ModuleId {
     pub fn parse(id: &str) -> Result<ModuleId> {
         Ok(match id.parse::<u32>() {
             Ok(i) => ModuleId::Number(i),
-            Err(_) => ModuleId::String(id.to_string()),
+            Err(_) => ModuleId::String(id.into()),
         })
     }
 }
@@ -220,11 +220,6 @@ enum InheritAsyncEdge {
 
 #[derive(Eq, PartialEq, Clone, Hash, Serialize, Deserialize, TraceRawVcs, Debug)]
 enum ChunkContentGraphNode {
-    // A module not placed in the current chunk, but whose references we will
-    // follow to find more graph nodes.
-    PassthroughModule {
-        module: Vc<Box<dyn Module>>,
-    },
     // A chunk item not placed in the current chunk, but whose references we will
     // follow to find more graph nodes.
     PassthroughChunkItem {
@@ -233,7 +228,7 @@ enum ChunkContentGraphNode {
     // Chunk items that are placed into the current chunk group
     ChunkItem {
         item: Vc<Box<dyn ChunkItem>>,
-        ident: ReadRef<String>,
+        ident: ReadRef<RcStr>,
     },
     // Async module that is referenced from the chunk group
     AsyncModule {
@@ -251,7 +246,6 @@ enum ChunkContentGraphNode {
 
 #[derive(Debug, Clone, Copy, TaskInput)]
 enum ChunkGraphNodeToReferences {
-    PassthroughModule(Vc<Box<dyn Module>>),
     PassthroughChunkItem(Vc<Box<dyn ChunkItem>>),
     ChunkItem(Vc<Box<dyn ChunkItem>>),
 }
@@ -333,7 +327,6 @@ async fn graph_node_to_referenced_nodes(
     chunking_context: Vc<Box<dyn ChunkingContext>>,
 ) -> Result<Vc<ChunkGraphEdges>> {
     let (parent, references) = match &node {
-        ChunkGraphNodeToReferences::PassthroughModule(module) => (None, module.references()),
         ChunkGraphNodeToReferences::PassthroughChunkItem(item) => (None, item.references()),
         ChunkGraphNodeToReferences::ChunkItem(item) => (Some(*item), item.references()),
     };
@@ -361,23 +354,12 @@ async fn graph_node_to_referenced_nodes(
 
             let module_data = reference
                 .resolve_reference()
+                .resolve()
+                .await?
                 .primary_modules()
                 .await?
                 .into_iter()
                 .map(|&module| async move {
-                    if Vc::try_resolve_sidecast::<Box<dyn PassthroughModule>>(module)
-                        .await?
-                        .is_some()
-                    {
-                        return Ok((
-                            Some(ChunkGraphEdge {
-                                key: Some(module),
-                                node: ChunkContentGraphNode::PassthroughModule { module },
-                            }),
-                            None,
-                        ));
-                    }
-
                     let Some(chunkable_module) =
                         Vc::try_resolve_sidecast::<Box<dyn ChunkableModule>>(module).await?
                     else {
@@ -442,7 +424,7 @@ async fn graph_node_to_referenced_nodes(
                         ChunkingType::Async => {
                             let chunk_loading =
                                 chunking_context.environment().chunk_loading().await?;
-                            if matches!(*chunk_loading, ChunkLoading::None) {
+                            if matches!(*chunk_loading, ChunkLoading::Edge) {
                                 let chunk_item = chunkable_module
                                     .as_chunk_item(chunking_context)
                                     .resolve()
@@ -546,9 +528,6 @@ impl Visit<ChunkContentGraphNode, ()> for ChunkContentVisit {
 
         async move {
             let node = match node {
-                ChunkContentGraphNode::PassthroughModule { module } => {
-                    ChunkGraphNodeToReferences::PassthroughModule(module)
-                }
                 ChunkContentGraphNode::PassthroughChunkItem { item } => {
                     ChunkGraphNodeToReferences::PassthroughChunkItem(item)
                 }
@@ -634,7 +613,6 @@ async fn chunk_content_internal_parallel(
 
     for graph_node in graph_nodes {
         match graph_node {
-            ChunkContentGraphNode::PassthroughModule { .. } => {}
             ChunkContentGraphNode::PassthroughChunkItem { .. } => {}
             ChunkContentGraphNode::ChunkItem { item, .. } => {
                 chunk_items.insert(item);

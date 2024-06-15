@@ -20,7 +20,7 @@ type EsmNamespaceObject = Record<string, any>;
 const REEXPORTED_OBJECTS = Symbol("reexported objects");
 
 interface BaseModule {
-  exports: Exports | Promise<Exports> | AsyncModulePromise;
+  exports: Function | Exports | Promise<Exports> | AsyncModulePromise;
   error: Error | undefined;
   loaded: boolean;
   id: ModuleId;
@@ -74,12 +74,25 @@ function defineProp(
 /**
  * Adds the getters to the exports object.
  */
-function esm(exports: Exports, getters: Record<string, () => any>) {
+function esm(
+  exports: Exports,
+  getters: Record<string, (() => any) | [() => any, (v: any) => void]>
+) {
   defineProp(exports, "__esModule", { value: true });
   if (toStringTag) defineProp(exports, toStringTag, { value: "Module" });
   for (const key in getters) {
-    defineProp(exports, key, { get: getters[key], enumerable: true });
+    const item = getters[key];
+    if (Array.isArray(item)) {
+      defineProp(exports, key, {
+        get: item[0],
+        set: item[1],
+        enumerable: true,
+      });
+    } else {
+      defineProp(exports, key, { get: item, enumerable: true });
+    }
   }
+  Object.seal(exports);
 }
 
 /**
@@ -198,6 +211,16 @@ function interopEsm(
   return ns;
 }
 
+function createNS(raw: BaseModule["exports"]): EsmNamespaceObject {
+  if (typeof raw === "function") {
+    return function (this: any, ...args: any[]) {
+      return raw.apply(this, args);
+    };
+  } else {
+    return Object.create(null);
+  }
+}
+
 function esmImport(
   sourceModule: Module,
   id: ModuleId
@@ -212,7 +235,7 @@ function esmImport(
   const raw = module.exports;
   return (module.namespaceObject = interopEsm(
     raw,
-    {},
+    createNS(raw),
     raw && (raw as any).__esModule
   ));
 }
@@ -310,12 +333,20 @@ const turbopackQueues = Symbol("turbopack queues");
 const turbopackExports = Symbol("turbopack exports");
 const turbopackError = Symbol("turbopack error");
 
+const enum QueueStatus {
+  Unknown = -1,
+  Unresolved = 0,
+  Resolved = 1,
+}
+
 type AsyncQueueFn = (() => void) & { queueCount: number };
-type AsyncQueue = AsyncQueueFn[] & { resolved: boolean };
+type AsyncQueue = AsyncQueueFn[] & {
+  status: QueueStatus;
+};
 
 function resolveQueue(queue?: AsyncQueue) {
-  if (queue && !queue.resolved) {
-    queue.resolved = true;
+  if (queue && queue.status !== QueueStatus.Resolved) {
+    queue.status = QueueStatus.Resolved;
     queue.forEach((fn) => fn.queueCount--);
     queue.forEach((fn) => (fn.queueCount-- ? fn.queueCount++ : fn()));
   }
@@ -332,11 +363,13 @@ type AsyncModuleExt = {
 type AsyncModulePromise<T = Exports> = Promise<T> & AsyncModuleExt;
 
 function wrapDeps(deps: Dep[]): AsyncModuleExt[] {
-  return deps.map((dep) => {
+  return deps.map((dep): AsyncModuleExt => {
     if (dep !== null && typeof dep === "object") {
       if (isAsyncModuleExt(dep)) return dep;
       if (isPromise(dep)) {
-        const queue: AsyncQueue = Object.assign([], { resolved: false });
+        const queue: AsyncQueue = Object.assign([], {
+          status: QueueStatus.Unresolved,
+        });
 
         const obj: AsyncModuleExt = {
           [turbopackExports]: {},
@@ -358,12 +391,10 @@ function wrapDeps(deps: Dep[]): AsyncModuleExt[] {
       }
     }
 
-    const ret: AsyncModuleExt = {
+    return {
       [turbopackExports]: dep,
       [turbopackQueues]: () => {},
     };
-
-    return ret;
   });
 }
 
@@ -378,18 +409,15 @@ function asyncModule(
   hasAwait: boolean
 ) {
   const queue: AsyncQueue | undefined = hasAwait
-    ? Object.assign([], { resolved: true })
+    ? Object.assign([], { status: QueueStatus.Unknown })
     : undefined;
 
   const depQueues: Set<AsyncQueue> = new Set();
 
-  ensureDynamicExports(module, module.exports);
-  const exports = module.exports;
-
   const { resolve, reject, promise: rawPromise } = createPromise<Exports>();
 
   const promise: AsyncModulePromise = Object.assign(rawPromise, {
-    [turbopackExports]: exports,
+    [turbopackExports]: module.exports,
     [turbopackQueues]: (fn) => {
       queue && fn(queue);
       depQueues.forEach(fn);
@@ -397,7 +425,20 @@ function asyncModule(
     },
   } satisfies AsyncModuleExt);
 
-  module.exports = module.namespaceObject = promise;
+  const attributes: PropertyDescriptor = {
+    get(): any {
+      return promise;
+    },
+    set(v: any) {
+      // Calling `esmExport` leads to this.
+      if (v !== promise) {
+        promise[turbopackExports] = v;
+      }
+    },
+  };
+
+  Object.defineProperty(module, "exports", attributes);
+  Object.defineProperty(module, "namespaceObject", attributes);
 
   function handleAsyncDependencies(deps: Dep[]) {
     const currentDeps = wrapDeps(deps);
@@ -417,7 +458,7 @@ function asyncModule(
     function fnQueue(q: AsyncQueue) {
       if (q !== queue && !depQueues.has(q)) {
         depQueues.add(q);
-        if (q && !q.resolved) {
+        if (q && q.status === QueueStatus.Unresolved) {
           fn.queueCount++;
           q.push(fn);
         }
@@ -433,7 +474,7 @@ function asyncModule(
     if (err) {
       reject((promise[turbopackError] = err));
     } else {
-      resolve(exports);
+      resolve(promise[turbopackExports]);
     }
 
     resolveQueue(queue);
@@ -441,8 +482,8 @@ function asyncModule(
 
   body(handleAsyncDependencies, asyncResult);
 
-  if (queue) {
-    queue.resolved = false;
+  if (queue && queue.status === QueueStatus.Unknown) {
+    queue.status = QueueStatus.Unresolved;
   }
 }
 

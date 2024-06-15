@@ -8,13 +8,13 @@ use ref_cast::RefCast;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sourcemap::{DecodedMap, SourceMap as RegularMap, SourceMapBuilder, SourceMapIndex};
-use turbo_tasks::{TryJoinIterExt, ValueToString, Vc};
+use turbo_tasks::{RcStr, TryJoinIterExt, ValueToString, Vc};
 use turbo_tasks_fs::{
     rope::{Rope, RopeBuilder},
     FileContent, FileSystemPath,
 };
 
-use crate::{source_pos::SourcePos, SOURCE_MAP_ROOT_NAME};
+use crate::{source_pos::SourcePos, SOURCE_MAP_PREFIX};
 
 pub(crate) mod source_map_asset;
 
@@ -30,7 +30,7 @@ pub trait GenerateSourceMap {
     fn generate_source_map(self: Vc<Self>) -> Vc<OptionSourceMap>;
 
     /// Returns an individual section of the larger source map, if found.
-    fn by_section(self: Vc<Self>, _section: String) -> Vc<OptionSourceMap> {
+    fn by_section(self: Vc<Self>, _section: RcStr) -> Vc<OptionSourceMap> {
         Vc::cell(None)
     }
 }
@@ -101,7 +101,7 @@ pub struct OriginalToken {
     pub original_file: String,
     pub original_line: usize,
     pub original_column: usize,
-    pub name: Option<String>,
+    pub name: Option<RcStr>,
 }
 
 impl Token {
@@ -132,7 +132,7 @@ impl<'a> From<sourcemap::Token<'a>> for Token {
                     .to_string(),
                 original_line: t.get_src_line() as usize,
                 original_column: t.get_src_col() as usize,
-                name: t.get_name().map(String::from),
+                name: t.get_name().map(RcStr::from),
             })
         } else {
             Token::Synthetic(SyntheticToken {
@@ -159,6 +159,7 @@ impl TryInto<sourcemap::RawToken> for Token {
                 src_col: t.original_column as u32,
                 src_line: t.original_line as u32,
                 src_id: t.original_file.parse()?,
+                is_range: false,
             },
             Self::Synthetic(t) => sourcemap::RawToken {
                 dst_col: t.generated_column as u32,
@@ -167,6 +168,7 @@ impl TryInto<sourcemap::RawToken> for Token {
                 src_col: SOURCEMAP_CRATE_NONE_U32,
                 src_line: SOURCEMAP_CRATE_NONE_U32,
                 src_id: SOURCEMAP_CRATE_NONE_U32,
+                is_range: false,
             },
         })
     }
@@ -240,7 +242,7 @@ impl SourceMap {
     #[turbo_tasks::function]
     pub fn empty() -> Vc<Self> {
         let mut builder = SourceMapBuilder::new(None);
-        builder.add(0, 0, 0, 0, None, None);
+        builder.add(0, 0, 0, 0, None, None, false);
         SourceMap::new_regular(builder.into_sourcemap()).cell()
     }
 
@@ -389,23 +391,23 @@ impl SourceMap {
         origin: Vc<FileSystemPath>,
     ) -> Result<Vc<Self>> {
         async fn resolve_source(
-            source_request: String,
-            source_content: Option<String>,
+            source_request: Arc<str>,
+            source_content: Option<Arc<str>>,
             origin: Vc<FileSystemPath>,
-        ) -> Result<(String, String)> {
+        ) -> Result<(Arc<str>, Arc<str>)> {
             Ok(
-                if let Some(path) = *origin.parent().try_join(source_request.to_string()).await? {
+                if let Some(path) = *origin.parent().try_join((&*source_request).into()).await? {
                     let path_str = path.to_string().await?;
-                    let source = format!("/{SOURCE_MAP_ROOT_NAME}/{}", path_str);
+                    let source = format!("{SOURCE_MAP_PREFIX}{}", path_str);
                     let source_content = if let Some(source_content) = source_content {
-                        source_content.to_string()
+                        source_content
                     } else if let FileContent::Content(file) = &*path.read().await? {
                         let text = file.content().to_str()?;
-                        text.to_string()
+                        text.to_string().into()
                     } else {
-                        format!("unable to read source {path_str}")
+                        format!("unable to read source {path_str}").into()
                     };
-                    (source, source_content)
+                    (source.into(), source_content)
                 } else {
                     let origin_str = origin.to_string().await?;
                     static INVALID_REGEX: Lazy<Regex> =
@@ -414,14 +416,15 @@ impl SourceMap {
                         .replace_all(&source_request, |s: &regex::Captures<'_>| {
                             s[0].replace('.', "_")
                         });
-                    let source = format!("/{SOURCE_MAP_ROOT_NAME}/{}/{}", origin_str, source);
+                    let source = format!("{SOURCE_MAP_PREFIX}{}/{}", origin_str, source);
                     let source_content = source_content.unwrap_or_else(|| {
                         format!(
                             "unable to access {source_request} in {origin_str} (it's leaving the \
                              filesystem root)"
                         )
+                        .into()
                     });
-                    (source, source_content)
+                    (source.into(), source_content)
                 },
             )
         }
@@ -430,14 +433,14 @@ impl SourceMap {
             origin: Vc<FileSystemPath>,
         ) -> Result<RegularMap> {
             let map = &map.0;
-            let file = map.get_file().map(ToString::to_string);
+            let file = map.get_file().map(Arc::<str>::from);
             let tokens = map.tokens().map(|t| t.get_raw_token()).collect();
-            let names = map.names().map(ToString::to_string).collect();
+            let names = map.names().map(Arc::<str>::from).collect();
             let count = map.get_source_count() as usize;
-            let sources = map.sources().map(ToString::to_string).collect::<Vec<_>>();
+            let sources = map.sources().map(Arc::<str>::from).collect::<Vec<_>>();
             let source_contents = map
                 .source_contents()
-                .map(|s| s.map(ToString::to_string))
+                .map(|s| s.map(Arc::<str>::from))
                 .collect::<Vec<_>>();
             let mut new_sources = Vec::with_capacity(count);
             let mut new_source_contents = Vec::with_capacity(count);
@@ -530,7 +533,7 @@ impl GenerateSourceMap for SourceMap {
     }
 
     #[turbo_tasks::function]
-    fn by_section(&self, _section: String) -> Vc<OptionSourceMap> {
+    fn by_section(&self, _section: RcStr) -> Vc<OptionSourceMap> {
         Vc::cell(None)
     }
 }

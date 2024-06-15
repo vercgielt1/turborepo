@@ -1,11 +1,33 @@
+//! File watching utilities for Turborepo. Includes a file watcher that is
+//! designed to work across multiple platforms, with consistent behavior and
+//! consistent ordering.
+//!
+//! Also includes watchers that take in file change events and produce derived
+//! data like changed packages or the workspaces in a repository.
+//!
+//! ## Watcher Implementation
+//! It's important to note that when implementing a watcher, you should aim to
+//! make file change event processing as fast as possible. There should be
+//! almost no slow code in the main event loop. Otherwise, the receiver will lag
+//! behind, and return a `Lagged` event.
+//!
+//! A common pattern that we use to avoid lag is having a separate event thread
+//! that processes events and accumulates them into a data structure, say a
+//! `Trie` for changed files, or a `HashSet` for changed packages. From there, a
+//! second thread is responsible for actually taking that accumulated data and
+//! processing it. This second thread can do slower tasks like executing a run
+//! or mapping files to changed packages. It can either be parked and awoken
+//! using `tokio::sync::Notify` or it can run periodically using
+//! `tokio::time::interval`.
+
 #![deny(clippy::all)]
+#![allow(clippy::mutable_key_type)]
 #![feature(assert_matches)]
 
 use std::{
     fmt::{Debug, Display},
     future::IntoFuture,
     path::Path,
-    result::Result,
     sync::Arc,
     time::Duration,
 };
@@ -36,9 +58,11 @@ use {
 };
 
 pub mod cookies;
+mod debouncer;
 #[cfg(target_os = "macos")]
 mod fsevent;
 pub mod globwatcher;
+pub mod hash_watcher;
 mod optional_watch;
 pub mod package_watcher;
 
@@ -288,7 +312,7 @@ fn filter_relevant(root: &AbsoluteSystemPath, event: &mut Event) {
                 // If we're modifying something along the path to the
                 // root, move the event to the root
                 if is_modify_existing {
-                    *path = root.as_std_path().to_owned();
+                    root.as_std_path().clone_into(path);
                 }
                 true
             }

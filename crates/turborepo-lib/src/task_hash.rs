@@ -9,7 +9,7 @@ use thiserror::Error;
 use tracing::{debug, Span};
 use turbopath::{AbsoluteSystemPath, AnchoredSystemPath, AnchoredSystemPathBuf};
 use turborepo_cache::CacheHitMetadata;
-use turborepo_env::{BySource, DetailedMap, EnvironmentVariableMap, ResolvedEnvMode};
+use turborepo_env::{BySource, DetailedMap, EnvironmentVariableMap};
 use turborepo_repository::package_graph::{PackageInfo, PackageName};
 use turborepo_scm::SCM;
 use turborepo_telemetry::events::{
@@ -17,12 +17,14 @@ use turborepo_telemetry::events::{
 };
 
 use crate::{
+    cli::EnvMode,
     engine::TaskNode,
     framework::infer_framework,
     hash::{FileHashes, LockFilePackages, TaskHashable, TurboHash},
     opts::RunOpts,
     run::task_id::TaskId,
     task_graph::TaskDefinition,
+    DaemonClient, DaemonConnector,
 };
 
 #[derive(Debug, Error)]
@@ -51,7 +53,7 @@ pub enum Error {
 
 impl TaskHashable<'_> {
     fn calculate_task_hash(mut self) -> String {
-        if matches!(self.env_mode, ResolvedEnvMode::Loose) {
+        if matches!(self.env_mode, EnvMode::Loose) {
             self.pass_through_env = &[];
         }
 
@@ -74,11 +76,11 @@ impl PackageInputsHashes {
         task_definitions: &HashMap<TaskId<'static>, TaskDefinition>,
         repo_root: &AbsoluteSystemPath,
         telemetry: &GenericEventBuilder,
+        daemon: &mut Option<DaemonClient<DaemonConnector>>,
     ) -> Result<PackageInputsHashes, Error> {
         tracing::trace!(scm_manual=%scm.is_manual(), "scm running in {} mode", if scm.is_manual() { "manual" } else { "git" });
 
         let span = Span::current();
-
         let (hashes, expanded_hashes): (HashMap<_, _>, HashMap<_, _>) = all_tasks
             .filter_map(|task| {
                 let span = tracing::info_span!(parent: &span, "calculate_file_hash", ?task);
@@ -115,31 +117,89 @@ impl PackageInputsHashes {
                     .unwrap_or_else(|| AnchoredSystemPath::new("").unwrap());
 
                 let scm_telemetry = package_task_event.child();
-                let mut hash_object = match scm.get_package_file_hashes(
-                    repo_root,
-                    package_path,
-                    &task_definition.inputs,
-                    Some(scm_telemetry),
-                ) {
-                    Ok(hash_object) => hash_object,
-                    Err(err) => return Some(Err(err.into())),
-                };
-                if let Some(dot_env) = &task_definition.dot_env {
-                    if !dot_env.is_empty() {
-                        let absolute_package_path = repo_root.resolve(package_path);
-                        let dot_env_object = match scm.hash_existing_of(
-                            &absolute_package_path,
-                            dot_env.iter().map(|p| p.to_anchored_system_path_buf()),
-                        ) {
-                            Ok(dot_env_object) => dot_env_object,
-                            Err(err) => return Some(Err(err.into())),
-                        };
+                // Try hashing with the daemon, if we have a connection. If we don't, or if we
+                // timeout or get an error, fallback to local hashing
+                let hash_object = if cfg!(feature = "daemon-file-hashing") {
+                    let handle = tokio::runtime::Handle::current();
+                    let mut daemon = daemon
+                        .as_ref() // Option::ref
+                        .cloned();
 
-                        for (key, value) in dot_env_object {
-                            hash_object.insert(key, value);
+                    daemon
+                        .as_mut()
+                        .and_then(|daemon| {
+                            let handle = handle.clone();
+                            // We need an async block here because the timeout must be created with
+                            // an active tokio context. Constructing it
+                            // directly in the rayon thread doesn't
+                            // provide one and will crash at runtime.
+                            handle
+                                .block_on(async {
+                                    tokio::time::timeout(
+                                        std::time::Duration::from_millis(100),
+                                        daemon
+                                            .get_file_hashes(package_path, &task_definition.inputs),
+                                    )
+                                    .await
+                                })
+                                .map_err(|e| {
+                                    tracing::debug!(
+                                        "daemon file hashing timed out for {}",
+                                        package_path
+                                    );
+                                    e
+                                })
+                                .ok() // If we timed out, we don't need to
+                                      // error,
+                                      // just return None so we can move on to
+                                      // local
+                        })
+                        .and_then(|result| {
+                            match result {
+                                Ok(hashes_resp) => Some(
+                                    hashes_resp
+                                        .file_hashes
+                                        .into_iter()
+                                        .map(|(path, hash)| {
+                                            (
+                                                turbopath::RelativeUnixPathBuf::new(path)
+                                                    .expect("daemon returns relative unix paths"),
+                                                hash,
+                                            )
+                                        })
+                                        .collect::<HashMap<_, _>>(),
+                                ),
+                                Err(e) => {
+                                    // Daemon could've failed for various reasons. We can still try
+                                    // local hashing.
+                                    tracing::debug!(
+                                        "daemon file hashing failed for {}: {}",
+                                        package_path,
+                                        e
+                                    );
+                                    None
+                                }
+                            }
+                        })
+                } else {
+                    None
+                };
+
+                let hash_object = match hash_object {
+                    Some(hash_object) => hash_object,
+                    None => {
+                        let local_hash_result = scm.get_package_file_hashes(
+                            repo_root,
+                            package_path,
+                            &task_definition.inputs,
+                            Some(scm_telemetry),
+                        );
+                        match local_hash_result {
+                            Ok(hash_object) => hash_object,
+                            Err(err) => return Some(Err(err.into())),
                         }
                     }
-                }
+                };
 
                 let file_hashes = FileHashes(hash_object);
                 let hash = file_hashes.clone().hash();
@@ -212,7 +272,7 @@ impl<'a> TaskHasher<'a> {
         &self,
         task_id: &TaskId<'static>,
         task_definition: &TaskDefinition,
-        task_env_mode: ResolvedEnvMode,
+        task_env_mode: EnvMode,
         workspace: &PackageInfo,
         dependency_set: HashSet<&TaskNode>,
         telemetry: PackageTaskEventBuilder,
@@ -335,7 +395,6 @@ impl<'a> TaskHasher<'a> {
                 .as_deref()
                 .unwrap_or_default(),
             env_mode: task_env_mode,
-            dot_env: task_definition.dot_env.as_deref().unwrap_or_default(),
         };
 
         let task_hash = task_hashable.calculate_task_hash();
@@ -396,22 +455,41 @@ impl<'a> TaskHasher<'a> {
     pub fn env(
         &self,
         task_id: &TaskId,
-        task_env_mode: ResolvedEnvMode,
+        task_env_mode: EnvMode,
         task_definition: &TaskDefinition,
         global_env: &EnvironmentVariableMap,
     ) -> Result<EnvironmentVariableMap, Error> {
         match task_env_mode {
-            ResolvedEnvMode::Strict => {
+            EnvMode::Strict => {
                 let mut pass_through_env = EnvironmentVariableMap::default();
                 let default_env_var_pass_through_map =
                     self.env_at_execution_start.from_wildcards(&[
+                        "HOME",
+                        "TZ",
+                        "LANG",
                         "SHELL",
+                        "PWD",
+                        "CI",
+                        "NODE_OPTIONS",
+                        "LD_LIBRARY_PATH",
+                        "DYLD_FALLBACK_LIBRARY_PATH",
+                        "LIBPATH",
+                        "COLORTERM",
+                        "TERM",
+                        "TERM_PROGRAM",
+                        // Vercel specific
+                        "VERCEL_*",
+                        "NEXT_*",
+                        "USE_OUTPUT_FOR_EDGE_FUNCTIONS",
+                        "NOW_BUILDER",
                         // Command Prompt casing of env variables
+                        "APPDATA",
                         "PATH",
                         "SYSTEMROOT",
                         // Powershell casing of env variables
                         "Path",
                         "SystemRoot",
+                        "AppData",
                     ])?;
                 let tracker_env = self
                     .task_hash_tracker
@@ -432,7 +510,7 @@ impl<'a> TaskHasher<'a> {
 
                 Ok(pass_through_env)
             }
-            ResolvedEnvMode::Loose => Ok(self.env_at_execution_start.clone()),
+            EnvMode::Loose => Ok(self.env_at_execution_start.clone()),
         }
     }
 }
@@ -456,6 +534,31 @@ pub fn get_external_deps_hash(
     });
 
     LockFilePackages(transitive_deps).hash()
+}
+
+pub fn get_internal_deps_hash(
+    scm: &SCM,
+    root: &AbsoluteSystemPath,
+    package_dirs: Vec<&AnchoredSystemPath>,
+) -> Result<String, Error> {
+    if package_dirs.is_empty() {
+        return Ok("".into());
+    }
+
+    let file_hashes = package_dirs
+        .into_par_iter()
+        .map(|package_dir| scm.get_package_file_hashes::<&str>(root, package_dir, &[], None))
+        .reduce(
+            || Ok(HashMap::new()),
+            |acc, hashes| {
+                let mut acc = acc?;
+                let hashes = hashes?;
+                acc.extend(hashes.into_iter());
+                Ok(acc)
+            },
+        )?;
+
+    Ok(FileHashes(file_hashes).hash())
 }
 
 impl TaskHashTracker {

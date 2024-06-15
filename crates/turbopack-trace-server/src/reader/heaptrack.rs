@@ -102,6 +102,8 @@ pub struct HeaptrackFormat {
     collapse_crates: HashSet<String>,
     expand_crates: HashSet<String>,
     expand_recursion: bool,
+    allocated_memory: u64,
+    temp_allocated_memory: u64,
 }
 
 const RECURSION_IP: usize = 1;
@@ -136,10 +138,7 @@ impl HeaptrackFormat {
                 }
             },
             trace_instruction_pointers: vec![0],
-            allocations: vec![AllocationInfo {
-                size: 0,
-                trace_index: 0,
-            }],
+            allocations: vec![],
             spans: 0,
             collapse_crates: env::var("COLLAPSE_CRATES")
                 .unwrap_or_default()
@@ -153,6 +152,8 @@ impl HeaptrackFormat {
                 .map(|s| s.to_string())
                 .collect(),
             expand_recursion: env::var("EXPAND_RECURSION").is_ok(),
+            allocated_memory: 0,
+            temp_allocated_memory: 0,
         }
     }
 }
@@ -160,12 +161,15 @@ impl HeaptrackFormat {
 impl TraceFormat for HeaptrackFormat {
     fn stats(&self) -> String {
         format!(
-            "{} spans, {} strings, {} ips, {} traces, {} allocations",
+            "{} spans, {} strings, {} ips, {} traces, {} allocations, {:.2} GB allocated, {:.2} \
+             GB temporarily allocated",
             self.spans,
             self.strings.len() - 1,
             self.trace_instruction_pointers.len() - 1,
             self.traces.len() - 1,
-            self.allocations.len() - 1
+            self.allocations.len() - 1,
+            (self.allocated_memory / 1024 / 1024) as f32 / 1024.0,
+            (self.temp_allocated_memory / 1024 / 1024) as f32 / 1024.0,
         )
     }
 
@@ -419,6 +423,7 @@ impl TraceFormat for HeaptrackFormat {
                         let TraceData { span_index, .. } =
                             self.traces.get(*trace_index).context("trace not found")?;
                         store.add_allocation(*span_index, *size, 1, &mut outdated_spans);
+                        self.allocated_memory += *size;
                     }
                 }
                 b'-' => {
@@ -432,6 +437,8 @@ impl TraceFormat for HeaptrackFormat {
                         let TraceData { span_index, .. } =
                             self.traces.get(*trace_index).context("trace not found")?;
                         store.add_deallocation(*span_index, *size, 1, &mut outdated_spans);
+                        self.allocated_memory -= *size;
+                        self.temp_allocated_memory += *size;
                     }
                 }
                 b'R' => {

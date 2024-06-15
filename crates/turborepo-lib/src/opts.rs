@@ -1,11 +1,13 @@
-use std::backtrace;
+use std::{backtrace, backtrace::Backtrace};
 
 use thiserror::Error;
 use turbopath::AnchoredSystemPathBuf;
 use turborepo_cache::CacheOpts;
 
 use crate::{
-    cli::{Command, DryRunMode, EnvMode, LogOrder, LogPrefix, OutputLogsMode, RunArgs},
+    cli::{
+        Command, DryRunMode, EnvMode, ExecutionArgs, LogOrder, LogPrefix, OutputLogsMode, RunArgs,
+    },
     run::task_id::TaskId,
     Args,
 };
@@ -13,7 +15,7 @@ use crate::{
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Expected run command")]
-    ExpectedRun,
+    ExpectedRun(#[backtrace] backtrace::Backtrace),
     #[error(transparent)]
     ParseFloat(#[from] std::num::ParseFloatError),
     #[error(
@@ -42,11 +44,6 @@ impl Opts {
     pub fn synthesize_command(&self) -> String {
         let mut cmd = format!("turbo run {}", self.run_opts.tasks.join(" "));
         for pattern in &self.scope_opts.filter_patterns {
-            cmd.push_str(" --filter=");
-            cmd.push_str(pattern);
-        }
-
-        for pattern in &self.scope_opts.legacy_filter.as_filter_pattern() {
             cmd.push_str(" --filter=");
             cmd.push_str(pattern);
         }
@@ -83,13 +80,21 @@ impl<'a> TryFrom<&'a Args> for Opts {
     type Error = self::Error;
 
     fn try_from(args: &'a Args) -> Result<Self, Self::Error> {
-        let Some(Command::Run(run_args)) = &args.command else {
-            return Err(Error::ExpectedRun);
+        let Some(Command::Run {
+            run_args,
+            execution_args,
+        }) = &args.command
+        else {
+            return Err(Error::ExpectedRun(Backtrace::capture()));
         };
-        let run_opts = RunOpts::try_from(run_args.as_ref())?;
-        let cache_opts = CacheOpts::from(run_args.as_ref());
-        let scope_opts = ScopeOpts::try_from(run_args.as_ref())?;
-        let runcache_opts = RunCacheOpts::from(run_args.as_ref());
+        let run_and_execution_args = RunAndExecutionArgs {
+            run_args: run_args.as_ref(),
+            execution_args: execution_args.as_ref(),
+        };
+        let run_opts = RunOpts::try_from(run_and_execution_args)?;
+        let cache_opts = CacheOpts::from(run_and_execution_args);
+        let scope_opts = ScopeOpts::try_from(run_and_execution_args)?;
+        let runcache_opts = RunCacheOpts::from(run_and_execution_args);
 
         Ok(Self {
             run_opts,
@@ -100,19 +105,26 @@ impl<'a> TryFrom<&'a Args> for Opts {
     }
 }
 
+// This is not ideal, but it allows us to impl From
+#[derive(Debug, Clone, Copy)]
+struct RunAndExecutionArgs<'a> {
+    run_args: &'a RunArgs,
+    execution_args: &'a ExecutionArgs,
+}
+
 #[derive(Debug, Default)]
 pub struct RunCacheOpts {
     pub(crate) skip_reads: bool,
     pub(crate) skip_writes: bool,
-    pub(crate) task_output_mode_override: Option<OutputLogsMode>,
+    pub(crate) task_output_logs_override: Option<OutputLogsMode>,
 }
 
-impl<'a> From<&'a RunArgs> for RunCacheOpts {
-    fn from(args: &'a RunArgs) -> Self {
+impl<'a> From<RunAndExecutionArgs<'a>> for RunCacheOpts {
+    fn from(args: RunAndExecutionArgs<'a>) -> Self {
         RunCacheOpts {
-            skip_reads: args.force.flatten().is_some_and(|f| f),
-            skip_writes: args.no_cache,
-            task_output_mode_override: args.output_logs,
+            skip_reads: args.execution_args.force.flatten().is_some_and(|f| f),
+            skip_writes: args.run_args.no_cache,
+            task_output_logs_override: args.execution_args.output_logs,
         }
     }
 }
@@ -175,57 +187,64 @@ pub enum ResolvedLogPrefix {
 
 const DEFAULT_CONCURRENCY: u32 = 10;
 
-impl<'a> TryFrom<&'a RunArgs> for RunOpts {
+impl<'a> TryFrom<RunAndExecutionArgs<'a>> for RunOpts {
     type Error = self::Error;
 
-    fn try_from(args: &'a RunArgs) -> Result<Self, Self::Error> {
+    fn try_from(args: RunAndExecutionArgs) -> Result<Self, Self::Error> {
         let concurrency = args
+            .execution_args
             .concurrency
             .as_deref()
             .map(parse_concurrency)
             .transpose()?
             .unwrap_or(DEFAULT_CONCURRENCY);
 
-        let graph = args.graph.as_deref().map(|file| match file {
+        let graph = args.run_args.graph.as_deref().map(|file| match file {
             "" => GraphOpts::Stdout,
             f => GraphOpts::File(f.to_string()),
         });
 
-        let (is_github_actions, log_order, log_prefix) = match args.log_order {
+        let (is_github_actions, log_order, log_prefix) = match args.execution_args.log_order {
             LogOrder::Auto if turborepo_ci::Vendor::get_constant() == Some("GITHUB_ACTIONS") => (
                 true,
                 ResolvedLogOrder::Grouped,
-                match args.log_prefix {
+                match args.execution_args.log_prefix {
                     LogPrefix::Task => ResolvedLogPrefix::Task,
                     _ => ResolvedLogPrefix::None,
                 },
             ),
 
             // Streaming is the default behavior except when running on GitHub Actions
-            LogOrder::Auto | LogOrder::Stream => {
-                (false, ResolvedLogOrder::Stream, args.log_prefix.into())
-            }
-            LogOrder::Grouped => (false, ResolvedLogOrder::Grouped, args.log_prefix.into()),
+            LogOrder::Auto | LogOrder::Stream => (
+                false,
+                ResolvedLogOrder::Stream,
+                args.execution_args.log_prefix.into(),
+            ),
+            LogOrder::Grouped => (
+                false,
+                ResolvedLogOrder::Grouped,
+                args.execution_args.log_prefix.into(),
+            ),
         };
 
         Ok(Self {
-            tasks: args.tasks.clone(),
+            tasks: args.execution_args.tasks.clone(),
             log_prefix,
             log_order,
-            summarize: args.summarize,
-            experimental_space_id: args.experimental_space_id.clone(),
-            framework_inference: args.framework_inference,
-            env_mode: args.env_mode,
+            summarize: args.run_args.summarize,
+            experimental_space_id: args.run_args.experimental_space_id.clone(),
+            framework_inference: args.execution_args.framework_inference,
+            env_mode: args.execution_args.env_mode,
             concurrency,
-            parallel: args.parallel,
-            profile: args.profile.clone(),
-            continue_on_error: args.continue_execution,
-            pass_through_args: args.pass_through_args.clone(),
-            only: args.only,
-            daemon: args.daemon(),
-            single_package: args.single_package,
+            parallel: args.run_args.parallel,
+            profile: args.run_args.profile.clone(),
+            continue_on_error: args.execution_args.continue_execution,
+            pass_through_args: args.execution_args.pass_through_args.clone(),
+            only: args.execution_args.only,
+            daemon: args.run_args.daemon(),
+            single_package: args.execution_args.single_package,
             graph,
-            dry_run: args.dry_run,
+            dry_run: args.run_args.dry_run,
             is_github_actions,
         })
     }
@@ -262,92 +281,39 @@ impl From<LogPrefix> for ResolvedLogPrefix {
     }
 }
 
-// LegacyFilter holds the options in use before the filter syntax. They have
-// their own rules for how they are compiled into filter expressions.
-#[derive(Debug, Default)]
-pub struct LegacyFilter {
-    // include_dependencies is whether to include pkg.dependencies in execution (defaults to false)
-    include_dependencies: bool,
-    // skip_dependents is whether to skip dependent impacted consumers in execution (defaults to
-    // false)
-    skip_dependents: bool,
-    // entrypoints is a list of package entrypoints
-    entrypoints: Vec<String>,
-    // since is the git ref used to calculate changed packages
-    since: Option<String>,
-}
-
-impl LegacyFilter {
-    pub fn as_filter_pattern(&self) -> Vec<String> {
-        let prefix = if self.skip_dependents { "" } else { "..." };
-        let suffix = if self.include_dependencies { "..." } else { "" };
-        if self.entrypoints.is_empty() {
-            if let Some(since) = self.since.as_ref() {
-                vec![format!("{}[{}]{}", prefix, since, suffix)]
-            } else {
-                Vec::new()
-            }
-        } else {
-            let since = self
-                .since
-                .as_ref()
-                .map_or_else(String::new, |s| format!("...[{}]", s));
-            self.entrypoints
-                .iter()
-                .map(|pattern| {
-                    if pattern.starts_with('!') {
-                        pattern.to_owned()
-                    } else {
-                        format!("{}{}{}{}", prefix, pattern, since, suffix)
-                    }
-                })
-                .collect()
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct ScopeOpts {
     pub pkg_inference_root: Option<AnchoredSystemPathBuf>,
-    pub legacy_filter: LegacyFilter,
     pub global_deps: Vec<String>,
     pub filter_patterns: Vec<String>,
-    pub ignore_patterns: Vec<String>,
 }
 
-impl<'a> TryFrom<&'a RunArgs> for ScopeOpts {
+impl<'a> TryFrom<RunAndExecutionArgs<'a>> for ScopeOpts {
     type Error = self::Error;
 
-    fn try_from(args: &'a RunArgs) -> Result<Self, Self::Error> {
+    fn try_from(args: RunAndExecutionArgs<'a>) -> Result<Self, Self::Error> {
         let pkg_inference_root = args
+            .execution_args
             .pkg_inference_root
             .as_ref()
             .map(AnchoredSystemPathBuf::from_raw)
             .transpose()?;
 
-        let legacy_filter = LegacyFilter {
-            include_dependencies: args.include_dependencies,
-            skip_dependents: args.no_deps,
-            entrypoints: args.scope.clone(),
-            since: args.since.clone(),
-        };
         Ok(Self {
-            global_deps: args.global_deps.clone(),
+            global_deps: args.execution_args.global_deps.clone(),
             pkg_inference_root,
-            legacy_filter,
-            filter_patterns: args.filter.clone(),
-            ignore_patterns: args.ignore.clone(),
+            filter_patterns: args.execution_args.filter.clone(),
         })
     }
 }
 
-impl<'a> From<&'a RunArgs> for CacheOpts {
-    fn from(run_args: &'a RunArgs) -> Self {
+impl<'a> From<RunAndExecutionArgs<'a>> for CacheOpts {
+    fn from(args: RunAndExecutionArgs<'a>) -> Self {
         CacheOpts {
-            override_dir: run_args.cache_dir.clone(),
-            skip_filesystem: run_args.remote_only,
-            remote_cache_read_only: run_args.remote_cache_read_only,
-            workers: run_args.cache_workers,
+            override_dir: args.execution_args.cache_dir.clone(),
+            skip_filesystem: args.execution_args.remote_only,
+            remote_cache_read_only: args.run_args.remote_cache_read_only,
+            workers: args.run_args.cache_workers,
             ..CacheOpts::default()
         }
     }
@@ -355,7 +321,7 @@ impl<'a> From<&'a RunArgs> for CacheOpts {
 
 impl RunOpts {
     pub fn should_redirect_stderr_to_stdout(&self) -> bool {
-        // If we're running on Github Actions, force everything to stdout
+        // If we're running on GitHub Actions, force everything to stdout
         // so as not to have out-of-order log lines
         matches!(self.log_order, ResolvedLogOrder::Grouped) && self.is_github_actions
     }
@@ -363,11 +329,7 @@ impl RunOpts {
 
 impl ScopeOpts {
     pub fn get_filters(&self) -> Vec<String> {
-        [
-            self.filter_patterns.clone(),
-            self.legacy_filter.as_filter_pattern(),
-        ]
-        .concat()
+        self.filter_patterns.clone()
     }
 }
 
@@ -376,36 +338,12 @@ mod test {
     use test_case::test_case;
     use turborepo_cache::CacheOpts;
 
-    use super::{LegacyFilter, RunOpts};
+    use super::RunOpts;
     use crate::{
         cli::DryRunMode,
         opts::{Opts, RunCacheOpts, ScopeOpts},
     };
 
-    #[test_case(LegacyFilter {
-            include_dependencies: true,
-            skip_dependents: false,
-            entrypoints: vec![],
-            since: Some("since".to_string()),
-        }, &["...[since]..."])]
-    #[test_case(LegacyFilter {
-            include_dependencies: false,
-            skip_dependents: true,
-            entrypoints: vec![],
-            since: Some("since".to_string()),
-        }, &["[since]"])]
-    #[test_case(LegacyFilter {
-            include_dependencies: false,
-            skip_dependents: true,
-            entrypoints: vec!["entry".to_string()],
-            since: Some("since".to_string()),
-        }, &["entry...[since]"])]
-    fn basic_legacy_filter_pattern(filter: LegacyFilter, expected: &[&str]) {
-        assert_eq!(
-            filter.as_filter_pattern(),
-            expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
-        )
-    }
     #[derive(Default)]
     struct TestCaseOpts {
         filter_patterns: Vec<String>,
@@ -415,7 +353,6 @@ mod test {
         parallel: bool,
         continue_on_error: bool,
         dry_run: Option<DryRunMode>,
-        legacy_filter: Option<LegacyFilter>,
     }
 
     #[test_case(TestCaseOpts {
@@ -443,46 +380,12 @@ mod test {
     )]
     #[test_case(
         TestCaseOpts {
-            legacy_filter: Some(LegacyFilter {
-                include_dependencies: false,
-                skip_dependents: true,
-                entrypoints: vec!["my-app".to_string()],
-                since: None,
-            }),
-            tasks: vec!["build".to_string()],
-            pass_through_args: vec!["-v".to_string(), "--foo=bar".to_string()],
-            ..Default::default()
-        },
-        "turbo run build --filter=my-app -- -v --foo=bar"
-    )]
-    #[test_case(
-        TestCaseOpts {
-            legacy_filter: Some(LegacyFilter {
-                include_dependencies: false,
-                skip_dependents: true,
-                entrypoints: vec!["my-app".to_string()],
-                since: None,
-            }),
-            filter_patterns: vec!["other-app".to_string()],
+            filter_patterns: vec!["other-app".to_string(), "my-app".to_string()],
             tasks: vec!["build".to_string()],
             pass_through_args: vec!["-v".to_string(), "--foo=bar".to_string()],
             ..Default::default()
         },
         "turbo run build --filter=other-app --filter=my-app -- -v --foo=bar"
-    )]
-    #[test_case    (
-        TestCaseOpts {
-            legacy_filter: Some(LegacyFilter {
-                include_dependencies: true,
-                skip_dependents: false,
-                entrypoints: vec!["my-app".to_string()],
-                since: Some("some-ref".to_string()),
-            }),
-            filter_patterns: vec!["other-app".to_string()],
-            tasks: vec!["build".to_string()],
-            ..Default::default()
-        },
-        "turbo run build --filter=other-app --filter=...my-app...[some-ref]..."
     )]
     #[test_case    (
         TestCaseOpts {
@@ -535,13 +438,10 @@ mod test {
         };
         let cache_opts = CacheOpts::default();
         let runcache_opts = RunCacheOpts::default();
-        let legacy_filter = opts_input.legacy_filter.unwrap_or_default();
         let scope_opts = ScopeOpts {
             pkg_inference_root: None,
-            legacy_filter,
             global_deps: vec![],
             filter_patterns: opts_input.filter_patterns,
-            ignore_patterns: vec![],
         };
         let opts = Opts {
             run_opts,

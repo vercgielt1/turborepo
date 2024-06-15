@@ -1,4 +1,4 @@
-use std::cell::OnceCell;
+use std::{cell::OnceCell, time::Duration};
 
 use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf};
 use turborepo_api_client::{APIAuth, APIClient};
@@ -24,7 +24,7 @@ pub(crate) mod scan;
 pub(crate) mod telemetry;
 pub(crate) mod unlink;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandBase {
     pub repo_root: AbsoluteSystemPathBuf,
     pub ui: UI,
@@ -68,7 +68,15 @@ impl CommandBase {
             .with_token(self.args.token.clone())
             .with_timeout(self.args.remote_cache_timeout)
             .with_preflight(self.args.preflight.then_some(true))
-            .with_experimental_ui(self.args.experimental_ui.then_some(true))
+            .with_ui(self.args.execution_args.as_ref().and_then(|args| {
+                if !args.log_order.compatible_with_tui() {
+                    Some(false)
+                } else {
+                    // If the argument is compatible with the TUI this does not mean we should
+                    // override other configs
+                    None
+                }
+            }))
             .build()
     }
 
@@ -117,13 +125,32 @@ impl CommandBase {
         &self.args
     }
 
+    pub fn args_mut(&mut self) -> &mut Args {
+        &mut self.args
+    }
+
     pub fn api_client(&self) -> Result<APIClient, ConfigError> {
         let config = self.config()?;
         let api_url = config.api_url();
         let timeout = config.timeout();
+        let upload_timeout = config.upload_timeout();
 
-        APIClient::new(api_url, timeout, self.version, config.preflight())
-            .map_err(ConfigError::ApiClient)
+        APIClient::new(
+            api_url,
+            if timeout > 0 {
+                Some(Duration::from_secs(timeout))
+            } else {
+                None
+            },
+            if upload_timeout > 0 {
+                Some(Duration::from_secs(upload_timeout))
+            } else {
+                None
+            },
+            self.version,
+            config.preflight(),
+        )
+        .map_err(ConfigError::ApiClient)
     }
 
     /// Current working directory for the turbo command

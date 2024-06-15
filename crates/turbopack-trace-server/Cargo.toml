@@ -13,17 +13,15 @@ bench = false
 
 [dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
-clap = { workspace = true, features = ["derive", "env"] }
 either = { workspace = true }
-futures = { workspace = true }
+flate2 = { version = "1.0.28" }
 indexmap = { workspace = true, features = ["serde"] }
-intervaltree = "0.2.7"
 itertools = { workspace = true }
-owo-colors = { workspace = true }
 postcard = { workspace = true }
+rayon = "1"
 rustc-demangle = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+tungstenite = { version = "0.21.0" }
 turbopack-trace-utils = { workspace = true }
-websocket = { version = "0.27.0", features = ["sync"] }
 zstd = { version = "0.13.0" }

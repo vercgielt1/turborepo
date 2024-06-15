@@ -1,10 +1,11 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use turbo_tasks::{trace::TraceRawVcs, ValueDefault, Vc};
+use turbo_tasks::{trace::TraceRawVcs, RcStr, ValueDefault, Vc};
 use turbopack_core::{
     condition::ContextCondition, environment::Environment, resolve::options::ImportMapping,
 };
 use turbopack_ecmascript::{references::esm::UrlRewriteBehavior, TreeShakingMode};
+pub use turbopack_mdx::MdxTransformOptions;
 use turbopack_node::{
     execution_context::ExecutionContext,
     transforms::{postcss::PostCssTransformOptions, webpack::WebpackLoaderItems},
@@ -15,12 +16,12 @@ use super::ModuleRule;
 #[derive(Clone, PartialEq, Eq, Debug, TraceRawVcs, Serialize, Deserialize)]
 pub struct LoaderRuleItem {
     pub loaders: Vc<WebpackLoaderItems>,
-    pub rename_as: Option<String>,
+    pub rename_as: Option<RcStr>,
 }
 
 #[derive(Default)]
 #[turbo_tasks::value(transparent)]
-pub struct WebpackRules(IndexMap<String, LoaderRuleItem>);
+pub struct WebpackRules(IndexMap<RcStr, LoaderRuleItem>);
 
 #[derive(Default)]
 #[turbo_tasks::value(transparent)]
@@ -43,6 +44,13 @@ pub struct OptionWebpackLoadersOptions(Option<Vc<WebpackLoadersOptions>>);
 pub enum DecoratorsKind {
     Legacy,
     Ecma,
+}
+
+/// The types when replacing `typeof window` with a constant.
+#[derive(Clone, PartialEq, Eq, Debug, TraceRawVcs, Serialize, Deserialize)]
+pub enum TypeofWindow {
+    Object,
+    Undefined,
 }
 
 /// Configuration options for the decorators transform.
@@ -96,32 +104,15 @@ impl ValueDefault for TypescriptTransformOptions {
 pub struct JsxTransformOptions {
     pub development: bool,
     pub react_refresh: bool,
-    pub import_source: Option<String>,
-    pub runtime: Option<String>,
+    pub import_source: Option<RcStr>,
+    pub runtime: Option<RcStr>,
 }
 
 #[turbo_tasks::value(shared)]
-#[derive(Default, Clone)]
-#[serde(default)]
-pub struct MdxTransformModuleOptions {
-    /// The path to a module providing Components to mdx modules.
-    /// The provider must export a useMDXComponents, which is called to access
-    /// an object of components.
-    pub provider_import_source: Option<String>,
-}
-
-#[turbo_tasks::value_impl]
-impl MdxTransformModuleOptions {
-    #[turbo_tasks::function]
-    pub fn default() -> Vc<Self> {
-        Self::cell(Default::default())
-    }
-}
-
-#[turbo_tasks::value(shared)]
-#[derive(Default, Clone)]
+#[derive(Clone, Default)]
 #[serde(default)]
 pub struct ModuleOptionsContext {
+    pub enable_typeof_window_inlining: Option<TypeofWindow>,
     pub enable_jsx: Option<Vc<JsxTransformOptions>>,
     pub enable_postcss_transform: Option<Vc<PostCssTransformOptions>>,
     pub enable_webpack_loaders: Option<Vc<WebpackLoadersOptions>>,
@@ -139,7 +130,7 @@ pub struct ModuleOptionsContext {
     pub enable_raw_css: bool,
     // [Note]: currently mdx, and mdx_rs have different configuration entrypoint from next.config.js,
     // however we might want to unify them in the future.
-    pub enable_mdx_rs: Option<Vc<MdxTransformModuleOptions>>,
+    pub enable_mdx_rs: Option<Vc<MdxTransformOptions>>,
     pub preset_env_versions: Option<Vc<Environment>>,
     /// Custom rules to be applied after all default rules.
     pub custom_rules: Vec<ModuleRule>,
@@ -160,7 +151,7 @@ pub struct ModuleOptionsContext {
 
     pub use_swc_css: bool,
 
-    pub side_effect_free_packages: Vec<String>,
+    pub side_effect_free_packages: Vec<RcStr>,
 }
 
 #[turbo_tasks::value_impl]

@@ -3,7 +3,7 @@ use indexmap::indexmap;
 use indoc::formatdoc;
 use serde::{Deserialize, Serialize};
 use turbo_tasks::{
-    trace::TraceRawVcs, Completion, Completions, TaskInput, TryFlatJoinIterExt, Value, Vc,
+    trace::TraceRawVcs, Completion, Completions, RcStr, TaskInput, TryFlatJoinIterExt, Value, Vc,
 };
 use turbo_tasks_bytes::stream::SingleValue;
 use turbo_tasks_fs::{
@@ -16,8 +16,7 @@ use turbopack_core::{
     file_source::FileSource,
     ident::AssetIdent,
     issue::{
-        Issue, IssueDescriptionExt, IssueExt, IssueSeverity, IssueStage, OptionStyledString,
-        StyledString,
+        Issue, IssueDescriptionExt, IssueSeverity, IssueStage, OptionStyledString, StyledString,
     },
     reference_type::{EntryReferenceSubType, InnerAssets, ReferenceType},
     resolve::{find_context_file, options::ImportMapping, FindContextFileResult},
@@ -37,7 +36,7 @@ use crate::{
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-#[turbo_tasks::value(transparent, serialization = "custom")]
+#[turbo_tasks::value(serialization = "custom")]
 struct PostCssProcessingResult {
     css: String,
     map: Option<String>,
@@ -63,7 +62,7 @@ pub struct PostCssTransformOptions {
 }
 
 #[turbo_tasks::function]
-fn postcss_configs() -> Vc<Vec<String>> {
+fn postcss_configs() -> Vc<Vec<RcStr>> {
     Vc::cell(
         [
             ".postcssrc",
@@ -86,7 +85,7 @@ fn postcss_configs() -> Vc<Vec<String>> {
             "postcss.config.json",
         ]
         .into_iter()
-        .map(ToOwned::to_owned)
+        .map(RcStr::from)
         .collect(),
     )
 }
@@ -194,8 +193,8 @@ async fn extra_configs_changed(
     let parent_path = postcss_config_path.parent();
 
     let config_paths = [
-        parent_path.join("tailwind.config.js".to_string()),
-        parent_path.join("tailwind.config.ts".to_string()),
+        parent_path.join("tailwind.config.js".into()),
+        parent_path.join("tailwind.config.ts".into()),
     ];
 
     let configs = config_paths
@@ -249,17 +248,23 @@ pub(crate) async fn config_loader_source(
     // Bundling would break the ability to use `require.resolve` in the config file.
     let code = formatdoc! {
         r#"
-            const configPath = `${{process.cwd()}}/{config_path}`;
+            import {{ pathToFileURL }} from 'node:url';
+            import path from 'node:path';
 
-            const mod = await __turbopack_external_import__(configPath);
+            const configPath = path.join(process.cwd(), {config_path});
+            // Absolute paths don't work with ESM imports on Windows:
+            // https://github.com/nodejs/node/issues/31710
+            // convert it to a file:// URL, which works on all platforms
+            const configUrl = pathToFileURL(configPath).toString();
+            const mod = await __turbopack_external_import__(configUrl);
 
             export default mod.default ?? mod;
         "#,
-        config_path = config_path,
+        config_path = serde_json::to_string(&config_path).expect("a string should be serializable"),
     };
 
     Ok(Vc::upcast(VirtualSource::new(
-        postcss_config_path.append("_.loader.mjs".to_string()),
+        postcss_config_path.append("_.loader.mjs".into()),
         AssetContent::file(File::from(code).into()),
     )))
 }
@@ -279,11 +284,11 @@ async fn postcss_executor(
 
     Ok(asset_context.process(
         Vc::upcast(VirtualSource::new(
-            postcss_config_path.join("transform.ts".to_string()),
-            AssetContent::File(embed_file("transforms/postcss.ts".to_string())).cell(),
+            postcss_config_path.join("transform.ts".into()),
+            AssetContent::File(embed_file("transforms/postcss.ts".into())).cell(),
         )),
         Value::new(ReferenceType::Internal(Vc::cell(indexmap! {
-            "CONFIG".to_string() => config_asset
+            "CONFIG".into() => config_asset
         }))),
     ))
 }
@@ -335,15 +340,6 @@ impl PostCssTransformedAsset {
         let Some(config_path) =
             find_config_in_location(project_path, this.config_location, this.source).await?
         else {
-            PostCssTransformIssue {
-                source: this.source.ident().path(),
-                title: "PostCSS transform skipped".to_string(),
-                description: "Unable to find PostCSS config".to_string(),
-                severity: IssueSeverity::Warning.cell(),
-            }
-            .cell()
-            .emit();
-
             return Ok(ProcessPostCssResult {
                 content: this.source.content(),
                 assets: Vec::new(),
@@ -378,10 +374,10 @@ impl PostCssTransformedAsset {
             .await?
             .get_relative_path_to(&*css_fs_path.await?)
         {
-            css_path
+            css_path.into_owned()
         } else {
             // This shouldn't be an error since it can happen on virtual assets
-            "".to_string()
+            "".into()
         };
 
         let config_value = evaluate_webpack_loader(WebpackLoaderContext {
@@ -419,9 +415,9 @@ impl PostCssTransformedAsset {
 #[turbo_tasks::value]
 struct PostCssTransformIssue {
     source: Vc<FileSystemPath>,
-    description: String,
+    description: RcStr,
     severity: Vc<IssueSeverity>,
-    title: String,
+    title: RcStr,
 }
 
 #[turbo_tasks::value_impl]
@@ -433,14 +429,12 @@ impl Issue for PostCssTransformIssue {
 
     #[turbo_tasks::function]
     fn title(&self) -> Vc<StyledString> {
-        StyledString::Text(self.title.to_string()).cell()
+        StyledString::Text(self.title.clone()).cell()
     }
 
     #[turbo_tasks::function]
     fn description(&self) -> Vc<OptionStyledString> {
-        Vc::cell(Some(
-            StyledString::Text(self.description.to_string()).cell(),
-        ))
+        Vc::cell(Some(StyledString::Text(self.description.clone()).cell()))
     }
 
     #[turbo_tasks::function]

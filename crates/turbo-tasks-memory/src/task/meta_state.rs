@@ -1,10 +1,12 @@
 use std::mem::replace;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
-use turbo_tasks::StatsType;
 
 use super::{PartialTaskState, Task, TaskState, UnloadedTaskState};
-use crate::map_guard::{ReadGuard, WriteGuard};
+use crate::{
+    aggregation::AggregationNode,
+    map_guard::{ReadGuard, WriteGuard},
+};
 
 pub(super) enum TaskMetaState {
     Full(Box<TaskState>),
@@ -77,21 +79,22 @@ impl TaskMetaState {
     }
 }
 
-// These need to be impl types since there is no way to reference the zero-sized
-// function item type
-pub(super) type TaskMetaStateAsFull = impl Fn(&TaskMetaState) -> Option<&TaskState>;
-pub(super) type TaskMetaStateAsPartial = impl Fn(&TaskMetaState) -> Option<&PartialTaskState>;
-pub(super) type TaskMetaStateAsUnloaded = impl Fn(&TaskMetaState) -> Option<&UnloadedTaskState>;
-pub(super) type TaskMetaStateAsFullMut = impl Fn(&mut TaskMetaState) -> Option<&mut TaskState>;
+pub(super) type TaskMetaStateAsFull = for<'a> fn(&'a TaskMetaState) -> Option<&'a TaskState>;
+pub(super) type TaskMetaStateAsPartial = for<'a> fn(&'a TaskMetaState) -> Option<&PartialTaskState>;
+pub(super) type TaskMetaStateAsUnloaded =
+    for<'a> fn(&'a TaskMetaState) -> Option<&'a UnloadedTaskState>;
+pub(super) type TaskMetaStateAsFullMut =
+    for<'a> fn(&'a mut TaskMetaState) -> Option<&'a mut TaskState>;
 pub(super) type TaskMetaStateAsPartialMut =
-    impl Fn(&mut TaskMetaState) -> Option<&mut PartialTaskState>;
+    for<'a> fn(&'a mut TaskMetaState) -> Option<&'a mut PartialTaskState>;
 pub(super) type TaskMetaStateAsUnloadedMut =
-    impl Fn(&mut TaskMetaState) -> Option<&mut UnloadedTaskState>;
+    for<'a> fn(&'a mut TaskMetaState) -> Option<&'a mut UnloadedTaskState>;
 
+#[allow(dead_code, reason = "test")]
 pub(super) enum TaskMetaStateReadGuard<'a> {
     Full(ReadGuard<'a, TaskMetaState, TaskState, TaskMetaStateAsFull>),
     Partial(ReadGuard<'a, TaskMetaState, PartialTaskState, TaskMetaStateAsPartial>),
-    Unloaded(ReadGuard<'a, TaskMetaState, UnloadedTaskState, TaskMetaStateAsUnloaded>),
+    Unloaded,
 }
 
 pub(super) type FullTaskWriteGuard<'a> =
@@ -117,6 +120,7 @@ pub(super) enum TaskMetaStateWriteGuard<'a> {
             TaskMetaStateAsUnloadedMut,
         >,
     ),
+    TemporaryFiller,
 }
 
 impl<'a> From<RwLockReadGuard<'a, TaskMetaState>> for TaskMetaStateReadGuard<'a> {
@@ -128,9 +132,7 @@ impl<'a> From<RwLockReadGuard<'a, TaskMetaState>> for TaskMetaStateReadGuard<'a>
             TaskMetaState::Partial(_) => {
                 TaskMetaStateReadGuard::Partial(ReadGuard::new(guard, TaskMetaState::as_partial))
             }
-            TaskMetaState::Unloaded(_) => {
-                TaskMetaStateReadGuard::Unloaded(ReadGuard::new(guard, TaskMetaState::as_unloaded))
-            }
+            TaskMetaState::Unloaded(_) => TaskMetaStateReadGuard::Unloaded,
         }
     }
 }
@@ -177,9 +179,7 @@ impl<'a> TaskMetaStateWriteGuard<'a> {
                 let partial = replace(
                     &mut *guard,
                     // placeholder
-                    TaskMetaState::Unloaded(UnloadedTaskState {
-                        stats_type: StatsType::Essential,
-                    }),
+                    TaskMetaState::Unloaded(UnloadedTaskState {}),
                 )
                 .into_partial()
                 .unwrap();
@@ -190,9 +190,7 @@ impl<'a> TaskMetaStateWriteGuard<'a> {
                 let unloaded = replace(
                     &mut *guard,
                     // placeholder
-                    TaskMetaState::Unloaded(UnloadedTaskState {
-                        stats_type: StatsType::Essential,
-                    }),
+                    TaskMetaState::Unloaded(UnloadedTaskState {}),
                 )
                 .into_unloaded()
                 .unwrap();
@@ -220,9 +218,7 @@ impl<'a> TaskMetaStateWriteGuard<'a> {
                 let unloaded = replace(
                     &mut *guard,
                     // placeholder
-                    TaskMetaState::Unloaded(UnloadedTaskState {
-                        stats_type: StatsType::Essential,
-                    }),
+                    TaskMetaState::Unloaded(UnloadedTaskState {}),
                 )
                 .into_unloaded()
                 .unwrap();
@@ -248,12 +244,26 @@ impl<'a> TaskMetaStateWriteGuard<'a> {
             TaskMetaStateWriteGuard::Full(state) => state.into_inner(),
             TaskMetaStateWriteGuard::Partial(state) => state.into_inner(),
             TaskMetaStateWriteGuard::Unloaded(state) => state.into_inner(),
+            TaskMetaStateWriteGuard::TemporaryFiller => unreachable!(),
         }
     }
 
     pub(super) fn ensure_at_least_partial(&mut self) {
-        if let TaskMetaStateWriteGuard::Unloaded(_state) = self {
-            todo!()
+        if matches!(self, TaskMetaStateWriteGuard::Unloaded(..)) {
+            let TaskMetaStateWriteGuard::Unloaded(state) =
+                replace(self, TaskMetaStateWriteGuard::TemporaryFiller)
+            else {
+                unreachable!();
+            };
+            let mut state = state.into_inner();
+            *state = TaskMetaState::Partial(Box::new(PartialTaskState {
+                aggregation_node: AggregationNode::new(),
+            }));
+            *self = TaskMetaStateWriteGuard::Partial(WriteGuard::new(
+                state,
+                TaskMetaState::as_partial,
+                TaskMetaState::as_partial_mut,
+            ));
         }
     }
 }

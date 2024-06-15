@@ -187,7 +187,7 @@ impl PnpmLockfile {
             SupportedLockfileVersion::V5 | SupportedLockfileVersion::V6 => {
                 self.packages.as_ref().map(|pkgs| pkgs.contains_key(key))
             }
-            SupportedLockfileVersion::V7 => {
+            SupportedLockfileVersion::V7AndV9 => {
                 self.snapshots.as_ref().map(|snaps| snaps.contains_key(key))
             }
         }
@@ -221,7 +221,7 @@ impl PnpmLockfile {
             return SupportedLockfileVersion::V5;
         }
         match self.lockfile_version.version.as_str() {
-            "7.0" => SupportedLockfileVersion::V7,
+            "7.0" | "9.0" => SupportedLockfileVersion::V7AndV9,
             _ => SupportedLockfileVersion::V6,
         }
     }
@@ -230,7 +230,7 @@ impl PnpmLockfile {
         match self.version() {
             SupportedLockfileVersion::V5 => format!("/{name}/{version}"),
             SupportedLockfileVersion::V6 => format!("/{name}@{version}"),
-            SupportedLockfileVersion::V7 => format!("{name}@{version}"),
+            SupportedLockfileVersion::V7AndV9 => format!("{name}@{version}"),
         }
     }
 
@@ -298,7 +298,7 @@ impl PnpmLockfile {
             let patch_key = format!("{}@{}", dp.name, dp.version);
             if let Some(patch) = patches.get(&patch_key).filter(|patch| {
                 // In V7 patch hash isn't included in packages key, so no need to check
-                matches!(self.version(), SupportedLockfileVersion::V7)
+                matches!(self.version(), SupportedLockfileVersion::V7AndV9)
                     || dp.patch_hash() == Some(&patch.hash)
             }) {
                 pruned_patches.insert(patch_key, patch.clone());
@@ -514,6 +514,16 @@ impl crate::Lockfile for PnpmLockfile {
             true
         }
     }
+
+    fn turbo_version(&self) -> Option<String> {
+        let turbo_version = self
+            .importers
+            .values()
+            // Look through all of the workspace packages for a turbo dependency
+            // grab the first one we find.
+            .find_map(|project| project.dependencies.turbo_version())?;
+        Some(turbo_version.to_owned())
+    }
 }
 
 impl DependencyInfo {
@@ -546,6 +556,11 @@ impl DependencyInfo {
 
     fn get_resolution<'a, V>(maybe_map: &'a Option<Map<String, V>>, key: &str) -> Option<&'a V> {
         maybe_map.as_ref().and_then(|maybe_map| maybe_map.get(key))
+    }
+
+    fn turbo_version(&self) -> Option<&str> {
+        let (_specifier, version) = self.find_resolution("turbo")?;
+        Some(version)
     }
 }
 
@@ -604,8 +619,9 @@ mod tests {
     const PNPM_V7: &[u8] = include_bytes!("../../fixtures/pnpm-v7.yaml").as_slice();
     const PNPM_V7_PEER: &[u8] = include_bytes!("../../fixtures/pnpm-v7-peer.yaml").as_slice();
     const PNPM_V7_PATCH: &[u8] = include_bytes!("../../fixtures/pnpm-v7-patch.yaml").as_slice();
-
-    use std::any::Any;
+    const PNPM_V9: &[u8] = include_bytes!("../../fixtures/pnpm-v9.yaml").as_slice();
+    const PNPM6_TURBO: &[u8] = include_bytes!("../../fixtures/pnpm6turbo.yaml").as_slice();
+    const PNPM8_TURBO: &[u8] = include_bytes!("../../fixtures/pnpm8turbo.yaml").as_slice();
 
     use super::*;
     use crate::{Lockfile, Package};
@@ -617,6 +633,7 @@ mod tests {
     #[test_case(PNPM_V7)]
     #[test_case(PNPM_V7_PEER)]
     #[test_case(PNPM_V7_PATCH)]
+    #[test_case(PNPM_V9)]
     fn test_roundtrip(fixture: &[u8]) {
         let lockfile = PnpmLockfile::from_bytes(fixture).unwrap();
         let serialized_lockfile = serde_yaml::to_string(&lockfile).unwrap();
@@ -858,6 +875,17 @@ mod tests {
         }))
         ; "v7 peer 2"
     )]
+    #[test_case(
+        PNPM_V9,
+        "",
+        "turbo",
+        "canary",
+        Ok(Some(crate::Package {
+            key: "turbo@1.13.3-canary.1".into(),
+            version: "1.13.3-canary.1".into(),
+        }))
+        ; "v9"
+    )]
     fn test_resolve_package(
         lockfile: &[u8],
         workspace_path: &str,
@@ -955,6 +983,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            false,
         )
         .unwrap();
 
@@ -1026,6 +1055,7 @@ c:
             )]
             .into_iter()
             .collect(),
+            false,
         )
         .unwrap();
 
@@ -1102,7 +1132,7 @@ c:
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))
                 .collect(),
         );
-        let mut closures: Vec<_> = crate::all_transitive_closures(&lockfile, workspaces)
+        let mut closures: Vec<_> = crate::all_transitive_closures(&lockfile, workspaces, false)
             .unwrap()
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().sorted().collect::<Vec<_>>()))
@@ -1228,5 +1258,14 @@ c:
             patches.contains_key("ajv-keywords@5.1.0"),
             "contains patched dependency"
         );
+    }
+
+    #[test_case(PNPM6, None ; "v6 missing")]
+    #[test_case(PNPM6_TURBO, Some("2.0.3") ; "v6")]
+    #[test_case(PNPM8_TURBO, Some("2.0.3") ; "v8")]
+    #[test_case(PNPM_V9, Some("1.13.3-canary.1") ; "v9")]
+    fn test_turbo_version(lockfile: &[u8], expected: Option<&str>) {
+        let lockfile = PnpmLockfile::from_bytes(lockfile).unwrap();
+        assert_eq!(lockfile.turbo_version().as_deref(), expected);
     }
 }

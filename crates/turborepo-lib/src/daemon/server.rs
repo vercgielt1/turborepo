@@ -18,25 +18,31 @@ use semver::Version;
 use thiserror::Error;
 use tokio::{
     select,
-    sync::{mpsc, oneshot},
+    sync::{broadcast::error::RecvError, mpsc, oneshot},
     task::JoinHandle,
 };
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{server::NamedService, transport::Server};
 use tower::ServiceBuilder;
 use tracing::{error, info, trace, warn};
-use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf};
+use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPathBuf, PathError};
 use turborepo_filewatch::{
     cookies::CookieWriter,
     globwatcher::{Error as GlobWatcherError, GlobError, GlobSet, GlobWatcher},
+    hash_watcher::{Error as HashWatcherError, HashSpec, HashWatcher, InputGlobs},
     package_watcher::{PackageWatchError, PackageWatcher},
     FileSystemWatcher, WatchError,
 };
 use turborepo_repository::package_manager;
+use turborepo_scm::SCM;
 
 use super::{bump_timeout::BumpTimeout, endpoint::SocketOpenError, proto};
-use crate::daemon::{
-    bump_timeout_layer::BumpTimeoutLayer, default_timeout_layer::DefaultTimeoutLayer,
-    endpoint::listen_socket, Paths,
+use crate::{
+    daemon::{
+        bump_timeout_layer::BumpTimeoutLayer, default_timeout_layer::DefaultTimeoutLayer,
+        endpoint::listen_socket, Paths,
+    },
+    package_changes_watcher::{PackageChangeEvent, PackageChangesWatcher},
 };
 
 #[derive(Debug)]
@@ -58,18 +64,24 @@ pub struct FileWatching {
     watcher: Arc<FileSystemWatcher>,
     pub glob_watcher: Arc<GlobWatcher>,
     pub package_watcher: Arc<PackageWatcher>,
+    pub package_changes_watcher: Arc<PackageChangesWatcher>,
+    pub hash_watcher: Arc<HashWatcher>,
 }
 
 #[derive(Debug, Error)]
 enum RpcError {
     #[error("deadline exceeded")]
     DeadlineExceeded,
+    #[error("invalid relative system path {0}: {1}")]
+    InvalidAnchoredPath(String, PathError),
     #[error("invalid glob: {0}")]
     InvalidGlob(#[from] GlobError),
     #[error("globwatching failed: {0}")]
     GlobWatching(#[from] GlobWatcherError),
     #[error("filewatching unavailable")]
     NoFileWatching,
+    #[error("file hashing failed: {0}")]
+    FileHashing(#[from] HashWatcherError),
 }
 
 impl From<RpcError> for tonic::Status {
@@ -81,6 +93,12 @@ impl From<RpcError> for tonic::Status {
             RpcError::InvalidGlob(e) => tonic::Status::invalid_argument(e.to_string()),
             RpcError::GlobWatching(e) => tonic::Status::unavailable(e.to_string()),
             RpcError::NoFileWatching => tonic::Status::unavailable("filewatching unavailable"),
+            RpcError::FileHashing(e) => {
+                tonic::Status::failed_precondition(format!("File hashing not available: {e}",))
+            }
+            e @ RpcError::InvalidAnchoredPath(_, _) => {
+                tonic::Status::invalid_argument(e.to_string())
+            }
         }
     }
 }
@@ -110,11 +128,26 @@ impl FileWatching {
             PackageWatcher::new(repo_root.clone(), recv.clone(), cookie_writer)
                 .map_err(|e| WatchError::Setup(format!("{:?}", e)))?,
         );
+        let scm = SCM::new(&repo_root);
+        let hash_watcher = Arc::new(HashWatcher::new(
+            repo_root.clone(),
+            package_watcher.watch_discovery(),
+            recv.clone(),
+            scm,
+        ));
+
+        let package_changes_watcher = Arc::new(PackageChangesWatcher::new(
+            repo_root,
+            recv.clone(),
+            hash_watcher.clone(),
+        ));
 
         Ok(FileWatching {
             watcher,
             glob_watcher,
             package_watcher,
+            package_changes_watcher,
+            hash_watcher,
         })
     }
 }
@@ -155,12 +188,7 @@ where
             external_shutdown,
         }
     }
-}
 
-impl<S> TurboGrpcService<S>
-where
-    S: Future<Output = CloseReason>,
-{
     pub async fn serve(self) -> Result<CloseReason, package_manager::Error> {
         let Self {
             external_shutdown,
@@ -329,6 +357,31 @@ impl TurboGrpcServiceInner {
             .await?;
         Ok((changed_globs, time_saved))
     }
+
+    async fn get_file_hashes(
+        &self,
+        package_path: String,
+        inputs: Vec<String>,
+    ) -> Result<HashMap<String, String>, RpcError> {
+        let inputs = InputGlobs::from_raw(inputs)?;
+        let package_path = AnchoredSystemPathBuf::try_from(package_path.as_str())
+            .map_err(|e| RpcError::InvalidAnchoredPath(package_path, e))?;
+        let hash_spec = HashSpec {
+            package_path,
+            inputs,
+        };
+        self.file_watching
+            .hash_watcher
+            .get_file_hashes(hash_spec)
+            .await
+            .map_err(RpcError::FileHashing)
+            .map(|hashes| {
+                hashes
+                    .into_iter()
+                    .map(|(path, hash)| (path.to_string(), hash))
+                    .collect()
+            })
+    }
 }
 
 async fn watch_root(
@@ -464,6 +517,22 @@ impl proto::turbod_server::Turbod for TurboGrpcServiceInner {
         }))
     }
 
+    // Note that this is implemented as a blocking call. We expect the default
+    // server timeout to apply, as well as whatever timeout the client may have
+    // set.
+    async fn get_file_hashes(
+        &self,
+        request: tonic::Request<proto::GetFileHashesRequest>,
+    ) -> Result<tonic::Response<proto::GetFileHashesResponse>, tonic::Status> {
+        let inner = request.into_inner();
+        let file_hashes = self
+            .get_file_hashes(inner.package_path, inner.input_globs)
+            .await?;
+        Ok(tonic::Response::new(proto::GetFileHashesResponse {
+            file_hashes,
+        }))
+    }
+
     async fn discover_packages(
         &self,
         _request: tonic::Request<proto::DiscoverPackagesRequest>,
@@ -512,6 +581,70 @@ impl proto::turbod_server::Turbod for TurboGrpcServiceInner {
                 Err(tonic::Status::failed_precondition(reason))
             }
         }
+    }
+
+    type PackageChangesStream = ReceiverStream<Result<proto::PackageChangeEvent, tonic::Status>>;
+
+    async fn package_changes(
+        &self,
+        _request: tonic::Request<proto::PackageChangesRequest>,
+    ) -> Result<tonic::Response<Self::PackageChangesStream>, tonic::Status> {
+        let mut package_changes_rx = self
+            .file_watching
+            .package_changes_watcher
+            .package_changes()
+            .await;
+
+        let (tx, rx) = mpsc::channel(1024);
+
+        tx.send(Ok(proto::PackageChangeEvent {
+            event: Some(proto::package_change_event::Event::RediscoverPackages(
+                proto::RediscoverPackages {},
+            )),
+        }))
+        .await
+        .map_err(|e| tonic::Status::unavailable(format!("{}", e)))?;
+
+        tokio::spawn(async move {
+            loop {
+                let event = match package_changes_rx.recv().await {
+                    Err(RecvError::Lagged(_)) => {
+                        warn!("package changes stream lagged");
+                        proto::PackageChangeEvent {
+                            event: Some(proto::package_change_event::Event::RediscoverPackages(
+                                proto::RediscoverPackages {},
+                            )),
+                        }
+                    }
+                    Err(err) => proto::PackageChangeEvent {
+                        event: Some(proto::package_change_event::Event::Error(
+                            proto::PackageChangeError {
+                                message: err.to_string(),
+                            },
+                        )),
+                    },
+                    Ok(PackageChangeEvent::Package { name }) => proto::PackageChangeEvent {
+                        event: Some(proto::package_change_event::Event::PackageChanged(
+                            proto::PackageChanged {
+                                package_name: name.to_string(),
+                            },
+                        )),
+                    },
+                    Ok(PackageChangeEvent::Rediscover) => proto::PackageChangeEvent {
+                        event: Some(proto::package_change_event::Event::RediscoverPackages(
+                            proto::RediscoverPackages {},
+                        )),
+                    },
+                };
+
+                if let Err(err) = tx.send(Ok(event)).await {
+                    error!("package changes stream closed: {}", err);
+                    break;
+                }
+            }
+        });
+
+        Ok(tonic::Response::new(ReceiverStream::new(rx)))
     }
 }
 

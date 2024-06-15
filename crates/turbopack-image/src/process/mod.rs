@@ -48,9 +48,11 @@ impl BlurPlaceholder {
 }
 
 /// Gathered meta information about an image.
+#[allow(clippy::manual_non_exhaustive)]
 #[serde_as]
 #[turbo_tasks::value]
 #[derive(Default)]
+#[non_exhaustive]
 pub struct ImageMetaData {
     pub width: u32,
     pub height: u32,
@@ -58,7 +60,6 @@ pub struct ImageMetaData {
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub mime_type: Option<Mime>,
     pub blur_placeholder: Option<BlurPlaceholder>,
-    placeholder_for_future_extensions: (),
 }
 
 impl ImageMetaData {
@@ -68,7 +69,6 @@ impl ImageMetaData {
             height: 100,
             mime_type,
             blur_placeholder: Some(BlurPlaceholder::fallback()),
-            placeholder_for_future_extensions: (),
         }
     }
 }
@@ -107,7 +107,7 @@ fn result_to_issue<T>(ident: Vc<AssetIdent>, result: Result<T>) -> Option<T> {
         Err(err) => {
             ImageProcessingIssue {
                 path: ident.path(),
-                message: StyledString::Text(format!("{}", PrettyPrintError(&err))).cell(),
+                message: StyledString::Text(format!("{}", PrettyPrintError(&err)).into()).cell(),
                 issue_severity: None,
                 title: None,
             }
@@ -167,10 +167,10 @@ fn load_image_internal(
             message: StyledString::Text(
                 "This version of Turbopack does not support AVIF images, will emit without \
                  optimization or encoding"
-                    .to_string(),
+                    .into(),
             )
             .cell(),
-            title: Some(StyledString::Text("AVIF image not supported".to_string()).cell()),
+            title: Some(StyledString::Text("AVIF image not supported".into()).cell()),
             issue_severity: Some(IssueSeverity::Warning.into()),
         }
         .cell()
@@ -185,10 +185,10 @@ fn load_image_internal(
             message: StyledString::Text(
                 "This version of Turbopack does not support WEBP images, will emit without \
                  optimization or encoding"
-                    .to_string(),
+                    .into(),
             )
             .cell(),
-            title: Some(StyledString::Text("WEBP image not supported".to_string()).cell()),
+            title: Some(StyledString::Text("WEBP image not supported".into()).cell()),
             issue_severity: Some(IssueSeverity::Warning.into()),
         }
         .cell()
@@ -213,7 +213,7 @@ fn compute_blur_data(
         Err(err) => {
             ImageProcessingIssue {
                 path: ident.path(),
-                message: StyledString::Text(format!("{}", PrettyPrintError(&err))).cell(),
+                message: StyledString::Text(format!("{}", PrettyPrintError(&err)).into()).cell(),
                 issue_severity: None,
                 title: None,
             }
@@ -368,7 +368,6 @@ pub async fn get_meta_data(
             height,
             mime_type: Some(mime::IMAGE_SVG),
             blur_placeholder: None,
-            placeholder_for_future_extensions: (),
         }
         .cell());
     }
@@ -406,7 +405,6 @@ pub async fn get_meta_data(
                     None
                 },
                 blur_placeholder,
-                placeholder_for_future_extensions: (),
             }
             .cell())
         }
@@ -505,7 +503,7 @@ impl Issue for ImageProcessingIssue {
     #[turbo_tasks::function]
     fn title(&self) -> Vc<StyledString> {
         self.title
-            .unwrap_or(StyledString::Text("Processing image failed".to_string()).cell())
+            .unwrap_or(StyledString::Text("Processing image failed".into()).cell())
     }
 
     #[turbo_tasks::function]

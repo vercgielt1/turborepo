@@ -2,7 +2,7 @@
 name = "turbo"
 version = "0.1.0"
 edition = "2021"
-license = "MPL-2.0"
+license = "MIT"
 
 [features]
 # By default, we enable rustls-tls for reqwest via downstream transitive features.
@@ -12,8 +12,6 @@ license = "MPL-2.0"
 default = ["rustls-tls", "turborepo-lib/daemon-package-discovery"]
 native-tls = ["turborepo-lib/native-tls"]
 rustls-tls = ["turborepo-lib/rustls-tls"]
-http = ["turborepo-lib/http"]
-go-daemon = ["turborepo-lib/go-daemon"]
 pprof = ["turborepo-lib/pprof"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -30,18 +28,7 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true, features = ["backtrace"] }
-clap = { workspace = true, features = ["derive"] }
-clap_complete = { workspace = true }
-command-group = { version = "2.0.1", features = ["with-tokio"] }
-dunce = { workspace = true }
-human-panic = "1.2.1"
 miette.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-tiny-gradient = { workspace = true }
-tokio-util = { version = "0.7.7", features = ["io"] }
-tracing = { workspace = true }
 turborepo-lib = { workspace = true, default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
