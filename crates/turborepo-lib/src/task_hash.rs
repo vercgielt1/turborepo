@@ -357,6 +357,7 @@ impl<'a> TaskHasher<'a> {
             by_source: BySource {
                 explicit: explicit_env_var_map,
                 matching: matching_env_var_map,
+                platform: EnvironmentVariableMap::default(),
             },
         };
 

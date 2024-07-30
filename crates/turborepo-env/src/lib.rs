@@ -73,6 +73,7 @@ impl EnvironmentVariableMap {
 pub struct BySource {
     pub explicit: EnvironmentVariableMap,
     pub matching: EnvironmentVariableMap,
+    pub platform: EnvironmentVariableMap,
 }
 
 // DetailedMap contains the composite and the detailed maps of environment
@@ -289,11 +290,26 @@ pub fn get_global_hashable_env_vars(
     matching_env_var_map.union(&default_env_var_map);
     matching_env_var_map.difference(&explicit_env_var_map);
 
+    // build the platform env map
+    let mut platform_env_var_map = EnvironmentVariableMap::default();
+    if let Some(platform_env) = env_at_execution_start.get("TURBO_PLATFORM_ENV") {
+        // split it by comma and build a String
+        let platform_envs: Vec<String> = platform_env.split(',').map(|s| s.to_string()).collect();
+        let platform_env_slice: &[String] = &platform_envs;
+        // add them to the platform env map
+        let platform_env_vars =
+            env_at_execution_start.wildcard_map_from_wildcards_unresolved(&platform_env_slice)?;
+        platform_env_var_map.union(&platform_env_vars.inclusions);
+        platform_env_var_map.union(&default_env_var_map);
+        platform_env_var_map.difference(&user_env_var_set.exclusions);
+    }
+
     Ok(DetailedMap {
         all: all_env_var_map,
         by_source: BySource {
             explicit: explicit_env_var_map,
             matching: matching_env_var_map,
+            platform: platform_env_var_map,
         },
     })
 }
