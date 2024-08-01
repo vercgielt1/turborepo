@@ -100,6 +100,8 @@ pub enum Error {
     PackageChange(#[from] tonic::Status),
     #[error("could not connect to UI thread")]
     UISend(String),
+    #[error("persistent tasks exited unexpectedly")]
+    PersistentExit,
 }
 
 impl WatchClient {
@@ -174,14 +176,32 @@ impl WatchClient {
         };
 
         let run_fut = async {
-            loop {
-                notify_run.notified().await;
+            let mut persistent_exit = None;
+            'outer: loop {
+                if let Some(persistent) = &mut persistent_exit {
+                    // here we watch both notify *and* persistent task
+                    // if notify exits, then continue per usual
+                    // if persist exits, then we break out of loop with a
+                    select! {
+                        _ = notify_run.notified() => {},
+                        _ = persistent => {
+                            break 'outer;
+                        }
+                    }
+                } else {
+                    notify_run.notified().await;
+                }
                 let changed_packages_guard = changed_packages.lock().await;
                 if !changed_packages_guard.borrow().is_empty() {
                     let changed_packages = changed_packages_guard.take();
-                    self.execute_run(changed_packages).await?;
+                    let (_result, persistent_exit_rx) = self.execute_run(changed_packages).await?;
+                    // Only update persist exit if a new one was created
+                    if let Some(rx) = persistent_exit_rx {
+                        persistent_exit = Some(rx);
+                    }
                 }
             }
+            Err(Error::PersistentExit)
         };
 
         select! {
@@ -231,7 +251,10 @@ impl WatchClient {
         Ok(())
     }
 
-    async fn execute_run(&mut self, changed_packages: ChangedPackages) -> Result<i32, Error> {
+    async fn execute_run(
+        &mut self,
+        changed_packages: ChangedPackages,
+    ) -> Result<(i32, Option<tokio::sync::oneshot::Receiver<()>>), Error> {
         // Should we recover here?
         match changed_packages {
             ChangedPackages::Some(packages) => {
@@ -275,7 +298,7 @@ impl WatchClient {
                     .build(&signal_handler, telemetry)
                     .await?;
 
-                Ok(run.run(self.ui_sender.clone(), true).await?)
+                Ok((run.run(self.ui_sender.clone(), true).await?, None))
             }
             ChangedPackages::All => {
                 let mut args = self.base.args().clone();
@@ -333,18 +356,25 @@ impl WatchClient {
                     let ui_sender = self.ui_sender.clone();
                     // If we have persistent tasks, we run them on a separate thread
                     // since persistent tasks don't finish
+                    let (persist_guard, persist_exit) = tokio::sync::oneshot::channel::<()>();
                     self.persistent_tasks_handle = Some(PersistentRunHandle {
                         stopper: persistent_run.stopper(),
-                        run_task: tokio::spawn(
-                            async move { persistent_run.run(ui_sender, true).await },
-                        ),
+                        run_task: tokio::spawn(async move {
+                            // We move the guard in here so we can determine if the persist tasks
+                            // exit as it'll go out of scope and drop.
+                            let _guard = persist_guard;
+                            persistent_run.run(ui_sender, true).await
+                        }),
                     });
 
                     // But we still run the regular tasks blocking
                     let mut non_persistent_run = self.run.create_run_without_persistent_tasks();
-                    Ok(non_persistent_run.run(self.ui_sender.clone(), true).await?)
+                    Ok((
+                        non_persistent_run.run(self.ui_sender.clone(), true).await?,
+                        Some(persist_exit),
+                    ))
                 } else {
-                    Ok(self.run.run(self.ui_sender.clone(), true).await?)
+                    Ok((self.run.run(self.ui_sender.clone(), true).await?, None))
                 }
             }
         }
