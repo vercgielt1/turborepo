@@ -656,11 +656,14 @@ impl<B: Backend + 'static> TurboTasks<B> {
         aggregation: Duration,
         timeout: Duration,
     ) -> Option<(Duration, usize)> {
-        self.aggregated_update_info(aggregation, timeout).await.map(
-            |UpdateInfo {
-                 duration, tasks, ..
-             }| (duration, tasks),
-        )
+        self.aggregated_update_info(aggregation, timeout)
+            .await
+            .ok()
+            .map(
+                |UpdateInfo {
+                     duration, tasks, ..
+                 }| (duration, tasks),
+            )
     }
 
     /// Returns [UpdateInfo] with all updates aggregated over a given duration
@@ -668,17 +671,18 @@ impl<B: Backend + 'static> TurboTasks<B> {
     pub async fn get_or_wait_aggregated_update_info(&self, aggregation: Duration) -> UpdateInfo {
         self.aggregated_update_info(aggregation, Duration::MAX)
             .await
+            .ok()
             .unwrap()
     }
 
     /// Returns [UpdateInfo] with all updates aggregated over a given duration
-    /// (`aggregation`). Will only return None when the timeout is reached while
+    /// (`aggregation`). Will only return Err when the timeout is reached while
     /// waiting for the first update.
     pub async fn aggregated_update_info(
         &self,
         aggregation: Duration,
         timeout: Duration,
-    ) -> Option<UpdateInfo> {
+    ) -> Result<UpdateInfo, UpdateInfo> {
         let listener = self
             .event
             .listen_with_note(|| "wait for update info".to_string());
@@ -686,7 +690,7 @@ impl<B: Backend + 'static> TurboTasks<B> {
             let (update, reason_set) = &mut *self.aggregated_update.lock().unwrap();
             if aggregation.is_zero() {
                 if let Some((duration, tasks)) = update.take() {
-                    return Some(UpdateInfo {
+                    return Ok(UpdateInfo {
                         duration,
                         tasks,
                         reasons: take(reason_set),
@@ -715,7 +719,14 @@ impl<B: Backend + 'static> TurboTasks<B> {
                 }
                 if timeout.is_zero() || tokio::time::timeout(timeout, listener).await.is_err() {
                     // Timeout
-                    return None;
+                    let (update, reason_set) = &*self.aggregated_update.lock().unwrap();
+                    let (duration, tasks) = update.unwrap_or_default();
+                    return Err(UpdateInfo {
+                        duration,
+                        tasks,
+                        reasons: reason_set.clone(),
+                        placeholder_for_future_fields: (),
+                    });
                 }
             }
         }
@@ -733,7 +744,7 @@ impl<B: Backend + 'static> TurboTasks<B> {
         }
         let (update, reason_set) = &mut *self.aggregated_update.lock().unwrap();
         if let Some((duration, tasks)) = update.take() {
-            Some(UpdateInfo {
+            Ok(UpdateInfo {
                 duration,
                 tasks,
                 reasons: take(reason_set),
