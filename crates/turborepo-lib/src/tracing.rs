@@ -1,4 +1,4 @@
-use std::{io::Stderr, marker::PhantomData, path::Path, sync::Mutex};
+use std::{io, marker::PhantomData, path::Path, sync::Mutex};
 
 use chrono::Local;
 use owo_colors::{
@@ -6,16 +6,10 @@ use owo_colors::{
     Color, OwoColorize,
 };
 use tracing::{field::Visit, metadata::LevelFilter, trace, Event, Level, Subscriber};
-use tracing_appender::{non_blocking::NonBlocking, rolling::RollingFileAppender};
-use tracing_chrome::ChromeLayer;
+use tracing_appender::rolling::RollingFileAppender;
 pub use tracing_subscriber::reload::Error;
 use tracing_subscriber::{
-    filter::Filtered,
-    fmt::{
-        self,
-        format::{DefaultFields, Writer},
-        FmtContext, FormatEvent, FormatFields, MakeWriter,
-    },
+    fmt::{self, format::Writer, FmtContext, FormatEvent, FormatFields},
     layer,
     prelude::*,
     registry::LookupSpan,
@@ -24,60 +18,30 @@ use tracing_subscriber::{
 };
 use turborepo_ui::ColorConfig;
 
-// a lot of types to make sure we record the right relationships
+/// Helper type definition for hiding exact type information
+/// It still leaks the underlying subscriber type that the layer targets
+type DynamicLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
 
-/// Note that we cannot express the type of `std::io::stderr` directly, so
-/// use zero-size wrapper to call the function.
-struct StdErrWrapper {}
+/// Expressing layer::Layered by hand results in us specifying the subscriber
+/// twice even though they will always be the same.
+/// These are created by using `with` on a subscriber hence the nesting that
+/// happens.
+type DynamicLayered<S> = layer::Layered<DynamicLayer<S>, S>;
 
-impl<'a> MakeWriter<'a> for StdErrWrapper {
-    type Writer = Stderr;
+/// The subscriber we set up for logs written to stderr
+type StdErrSubscriber = DynamicLayered<Registry>;
 
-    fn make_writer(&'a self) -> Self::Writer {
-        std::io::stderr()
-    }
-}
-
-/// A basic logger that logs to stderr using the TurboFormatter.
-/// The first generic parameter refers to the previous layer, which
-/// is in this case the default layer (`Registry`).
-type StdErrLog = fmt::Layer<Registry, DefaultFields, TurboFormatter, StdErrWrapper>;
-/// We filter this using an EnvFilter.
-type StdErrLogFiltered = Filtered<StdErrLog, EnvFilter, Registry>;
-/// When the `StdErrLogFiltered` is applied to the `Registry`, we get a
-/// `StdErrLogLayered`, which forms the base for the next layer.
-type StdErrLogLayered = layer::Layered<StdErrLogFiltered, Registry>;
-
-/// A logger that spits lines into a file, using the standard formatter.
-/// It is applied on top of the `StdErrLogLayered` layer.
-type DaemonLog = fmt::Layer<StdErrLogLayered, DefaultFields, fmt::format::Format, NonBlocking>;
-/// This layer can be reloaded. `None` means the layer is disabled.
-type DaemonReload = reload::Layer<Option<DaemonLog>, StdErrLogLayered>;
-/// We filter this using a custom filter that only logs events
-/// - with evel `TRACE` or higher for the `turborepo` target
-/// - with level `INFO` or higher for all other targets
-type DaemonLogFiltered = Filtered<DaemonReload, EnvFilter, StdErrLogLayered>;
-/// When the `DaemonLogFiltered` is applied to the `StdErrLogLayered`, we get a
-/// `DaemonLogLayered`, which forms the base for the next layer.
-type DaemonLogLayered = layer::Layered<DaemonLogFiltered, StdErrLogLayered>;
-
-/// A logger that converts events to chrome tracing format and writes them
-/// to a file. It is applied on top of the `DaemonLogLayered` layer.
-type ChromeLog = ChromeLayer<DaemonLogLayered>;
-/// This layer can be reloaded. `None` means the layer is disabled.
-type ChromeReload = reload::Layer<Option<ChromeLog>, DaemonLogLayered>;
-/// When the `ChromeLogFiltered` is applied to the `DaemonLogLayered`, we get a
-/// `ChromeLogLayered`, which forms the base for the next layer.
-type ChromeLogLayered = layer::Layered<ChromeReload, DaemonLogLayered>;
+/// The subscriber for daemon
+type DaemonLogSubscriber = DynamicLayered<StdErrSubscriber>;
 
 pub struct TurboSubscriber {
-    daemon_update: Handle<Option<DaemonLog>, StdErrLogLayered>,
+    daemon_update: Handle<Option<DynamicLayer<StdErrSubscriber>>, StdErrSubscriber>,
 
     /// The non-blocking file logger only continues to log while this guard is
     /// held. We keep it here so that it doesn't get dropped.
     daemon_guard: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>>,
 
-    chrome_update: Handle<Option<ChromeLog>, DaemonLogLayered>,
+    chrome_update: Handle<Option<DynamicLayer<DaemonLogSubscriber>>, DaemonLogSubscriber>,
     chrome_guard: Mutex<Option<tracing_chrome::FlushGuard>>,
 
     #[cfg(feature = "pprof")]
@@ -127,17 +91,18 @@ impl TurboSubscriber {
         };
 
         let stderr = fmt::layer()
-            .with_writer(StdErrWrapper {})
+            .with_writer(io::stderr)
             .event_format(TurboFormatter::new_with_ansi(
                 !color_config.should_strip_ansi,
             ))
-            .with_filter(env_filter(LevelFilter::WARN));
+            .with_filter(env_filter(LevelFilter::WARN))
+            .boxed();
 
         // we set this layer to None to start with, effectively disabling it
-        let (logrotate, daemon_update) = reload::Layer::new(Option::<DaemonLog>::None);
-        let logrotate: DaemonLogFiltered = logrotate.with_filter(env_filter(LevelFilter::INFO));
+        let (logrotate, daemon_update) = reload::Layer::new(None);
+        let logrotate = logrotate.with_filter(env_filter(LevelFilter::INFO)).boxed();
 
-        let (chrome, chrome_update) = reload::Layer::new(Option::<ChromeLog>::None);
+        let (chrome, chrome_update) = reload::Layer::new(None);
 
         let registry = Registry::default()
             .with(stderr)
@@ -171,9 +136,10 @@ impl TurboSubscriber {
         let (file_writer, guard) = tracing_appender::non_blocking(appender);
         trace!("created non-blocking file writer");
 
-        let layer: DaemonLog = tracing_subscriber::fmt::layer()
+        let layer = tracing_subscriber::fmt::layer()
             .with_writer(file_writer)
-            .with_ansi(false);
+            .with_ansi(false)
+            .boxed();
 
         self.daemon_update.reload(Some(layer))?;
         self.daemon_guard
@@ -197,6 +163,8 @@ impl TurboSubscriber {
             .include_locations(true)
             .trace_style(tracing_chrome::TraceStyle::Async)
             .build();
+
+        let layer = layer.boxed();
 
         self.chrome_update.reload(Some(layer))?;
         self.chrome_guard
