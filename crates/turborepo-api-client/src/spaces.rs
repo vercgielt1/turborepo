@@ -1,3 +1,4 @@
+use async_graphql::{Enum, SimpleObject};
 use chrono::{DateTime, Local};
 use reqwest::Method;
 use serde::Serialize;
@@ -29,7 +30,7 @@ pub struct SpaceClientSummary {
     pub version: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, SimpleObject)]
 #[serde(rename_all = "camelCase")]
 pub struct SpacesCacheStatus {
     pub status: CacheStatus,
@@ -38,21 +39,21 @@ pub struct SpacesCacheStatus {
     pub time_saved: u64,
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, Enum)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum CacheStatus {
     Hit,
     Miss,
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, Enum)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum CacheSource {
     Local,
     Remote,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Debug, Serialize, SimpleObject)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceTaskSummary {
     pub key: String,

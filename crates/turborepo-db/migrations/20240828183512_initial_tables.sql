@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, -- primary key should be uuid
-    start_time INTEGER NOT NULL,
-    end_time INTEGER,
+    start_time BIGINT NOT NULL,
+    end_time BIGINT,
     exit_code INTEGER,
     status TEXT NOT NULL,
     command TEXT NOT NULL,

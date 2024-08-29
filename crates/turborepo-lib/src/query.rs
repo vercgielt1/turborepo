@@ -7,6 +7,7 @@ use itertools::Itertools;
 use miette::Diagnostic;
 use thiserror::Error;
 use tokio::{net::TcpListener, select};
+use turborepo_db::DatabaseHandle;
 use turborepo_repository::package_graph::{PackageName, PackageNode};
 
 use crate::{
@@ -26,6 +27,8 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error(transparent)]
     Run(#[from] crate::run::Error),
+    #[error(transparent)]
+    Database(#[from] turborepo_db::Error),
 }
 
 pub struct Query {
@@ -237,6 +240,12 @@ impl PackagePredicate {
 
 #[Object]
 impl Query {
+    async fn runs(&self, limit: Option<u32>) -> Result<Vec<turborepo_db::Run>, Error> {
+        let cache_dir = self.run.opts().cache_opts.cache_dir.clone();
+        let db = DatabaseHandle::new(&cache_dir, &self.run.repo_root()).await?;
+        Ok(db.get_runs(limit).await?)
+    }
+
     async fn affected_packages(
         &self,
         base: Option<String>,
