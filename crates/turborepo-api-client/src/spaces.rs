@@ -1,3 +1,4 @@
+use async_graphql::{Enum, SimpleObject};
 use chrono::{DateTime, Local};
 use reqwest::Method;
 use serde::Serialize;
@@ -13,6 +14,15 @@ pub enum RunStatus {
     Completed,
 }
 
+impl AsRef<str> for RunStatus {
+    fn as_ref(&self) -> &str {
+        match self {
+            RunStatus::Running => "RUNNING",
+            RunStatus::Completed => "COMPLETED",
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct SpaceClientSummary {
     pub id: &'static str,
@@ -20,7 +30,7 @@ pub struct SpaceClientSummary {
     pub version: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, SimpleObject)]
 #[serde(rename_all = "camelCase")]
 pub struct SpacesCacheStatus {
     pub status: CacheStatus,
@@ -29,21 +39,21 @@ pub struct SpacesCacheStatus {
     pub time_saved: u64,
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, Enum)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum CacheStatus {
     Hit,
     Miss,
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, Enum)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum CacheSource {
     Local,
     Remote,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Debug, Serialize, SimpleObject)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceTaskSummary {
     pub key: String,
@@ -144,13 +154,13 @@ impl APIClient {
         &self,
         space_id: &str,
         api_auth: &APIAuth,
-        payload: CreateSpaceRunPayload,
+        payload: &CreateSpaceRunPayload,
     ) -> Result<SpaceRun, Error> {
         let url = format!("/v0/spaces/{}/runs", space_id);
         let request_builder = self
             .create_request_builder(&url, api_auth, Method::POST)
             .await?
-            .json(&payload);
+            .json(payload);
 
         let response =
             retry::make_retryable_request(request_builder, retry::RetryStrategy::Timeout)
@@ -167,7 +177,7 @@ impl APIClient {
         space_id: &str,
         run_id: &str,
         api_auth: &APIAuth,
-        task: SpaceTaskSummary,
+        task: &SpaceTaskSummary,
     ) -> Result<(), Error> {
         let request_builder = self
             .create_request_builder(
@@ -176,7 +186,7 @@ impl APIClient {
                 Method::POST,
             )
             .await?
-            .json(&task);
+            .json(task);
 
         retry::make_retryable_request(request_builder, retry::RetryStrategy::Timeout)
             .await?
