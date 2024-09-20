@@ -16,6 +16,7 @@ use turbopath::AbsoluteSystemPathBuf;
 use turborepo_repository::package_graph::PackageName;
 
 use crate::{
+    global_deps_package_change_mapper,
     query::file::File,
     run::{builder::RunBuilder, Run},
     signal::SignalHandler,
@@ -39,6 +40,8 @@ pub enum Error {
     Run(#[from] crate::run::Error),
     #[error(transparent)]
     Path(#[from] turbopath::PathError),
+    #[error(transparent)]
+    ChangeMapper(#[from] global_deps_package_change_mapper::Error),
 }
 
 pub struct Query {
@@ -51,10 +54,19 @@ impl Query {
     }
 }
 
-#[derive(Debug, SimpleObject)]
+#[derive(Debug, SimpleObject, Default)]
 pub struct Array<T: OutputType> {
     items: Vec<T>,
     length: usize,
+}
+
+impl<T: OutputType> Array<T> {
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            length: 0,
+        }
+    }
 }
 
 impl<T: OutputType> FromIterator<T> for Array<T> {
