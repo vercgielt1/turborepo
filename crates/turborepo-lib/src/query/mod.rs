@@ -560,19 +560,29 @@ impl RepositoryQuery {
         Ok(File::new(self.run.clone(), abs_path))
     }
 
+    /// Get the files that have changed between the `base` and `head` commits.
+    ///
+    /// # Arguments
+    ///
+    /// * `base`: Defaults to `main` or `master`
+    /// * `head`: Defaults to `HEAD`
+    /// * `include_uncommitted`: Defaults to `true` if `head` is not provided
+    /// * `allow_unknown_objects`: Defaults to `false`
+    /// * `merge_base`: Defaults to `true`
+    ///
+    /// returns: Result<Array<File>, Error>
     async fn affected_files(
         &self,
         base: Option<String>,
         head: Option<String>,
-        /// Defaults to true if `head` is not provided
         include_uncommitted: Option<bool>,
-        /// Defaults to true
         merge_base: Option<bool>,
     ) -> Result<Array<File>, Error> {
         let base = base.as_deref();
         let head = head.as_deref();
         let include_uncommitted = include_uncommitted.unwrap_or_else(|| head.is_none());
         let merge_base = merge_base.unwrap_or(true);
+
         let repo_root = self.run.repo_root();
         let change_result = self
             .run
