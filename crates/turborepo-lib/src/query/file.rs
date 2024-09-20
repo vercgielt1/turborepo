@@ -146,7 +146,7 @@ impl File {
     }
 
     // This is `Option` because the file may not be in the repo
-    async fn repo_relative_path(&self) -> Option<String> {
+    async fn path(&self) -> Option<String> {
         self.run
             .repo_root()
             .anchor(&self.path)
@@ -165,8 +165,6 @@ impl File {
     /// Gets the affected packages for the file, i.e. all packages that depend
     /// on the file.
     async fn affected_packages(&self) -> Result<Array<Package>, Error> {
-        // This is technically doable with the `package` field, but this is a nice bit
-        // of syntactic sugar
         match self.get_package() {
             Ok(Some(PackageMapping::All(_))) => Ok(self
                 .run
@@ -188,6 +186,11 @@ impl File {
                         run: self.run.clone(),
                         name: package.as_package_name().clone(),
                     })
+                    // Add the package itself to the list
+                    .chain(std::iter::once(Package {
+                        run: self.run.clone(),
+                        name: package.name.clone(),
+                    }))
                     .sorted_by(|a, b| a.name.cmp(&b.name))
                     .collect())
             }
