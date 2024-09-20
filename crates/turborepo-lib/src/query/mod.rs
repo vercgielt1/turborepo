@@ -49,6 +49,8 @@ pub enum Error {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Resolution(#[from] crate::run::scope::filter::ResolutionError),
+    #[error(transparent)]
+    ChangeMapper(#[from] turborepo_repository::change_mapper::Error),
 }
 
 pub struct RepositoryQuery {
@@ -61,7 +63,7 @@ impl RepositoryQuery {
     }
 }
 
-#[derive(Debug, SimpleObject)]
+#[derive(Debug, SimpleObject, Default)]
 #[graphql(concrete(name = "RepositoryTasks", params(RepositoryTask)))]
 #[graphql(concrete(name = "Packages", params(Package)))]
 #[graphql(concrete(name = "ChangedPackages", params(ChangedPackage)))]
@@ -70,6 +72,15 @@ impl RepositoryQuery {
 pub struct Array<T: OutputType> {
     items: Vec<T>,
     length: usize,
+}
+
+impl<T: OutputType> Array<T> {
+    pub fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            length: 0,
+        }
+    }
 }
 
 impl<T: OutputType> FromIterator<T> for Array<T> {
@@ -398,41 +409,50 @@ enum PackageChangeReason {
     InFilteredDirectory(InFilteredDirectory),
 }
 
-impl From<turborepo_repository::change_mapper::PackageInclusionReason> for PackageChangeReason {
-    fn from(value: turborepo_repository::change_mapper::PackageInclusionReason) -> Self {
-        match value {
-            turborepo_repository::change_mapper::PackageInclusionReason::All(
-                AllPackageChangeReason::GlobalDepsChanged { file },
-            ) => PackageChangeReason::GlobalDepsChanged(GlobalDepsChanged {
-                file_path: file.to_string(),
-            }),
-            turborepo_repository::change_mapper::PackageInclusionReason::All(
-                AllPackageChangeReason::DefaultGlobalFileChanged { file },
-            ) => PackageChangeReason::DefaultGlobalFileChanged(DefaultGlobalFileChanged {
-                file_path: file.to_string(),
-            }),
-            turborepo_repository::change_mapper::PackageInclusionReason::All(
-                AllPackageChangeReason::LockfileChangeDetectionFailed,
-            ) => {
+impl From<AllPackageChangeReason> for PackageChangeReason {
+    fn from(reason: AllPackageChangeReason) -> Self {
+        match reason {
+            AllPackageChangeReason::GlobalDepsChanged { file } => {
+                PackageChangeReason::GlobalDepsChanged(GlobalDepsChanged {
+                    file_path: file.to_string(),
+                })
+            }
+            AllPackageChangeReason::DefaultGlobalFileChanged { file } => {
+                PackageChangeReason::DefaultGlobalFileChanged(DefaultGlobalFileChanged {
+                    file_path: file.to_string(),
+                })
+            }
+
+            AllPackageChangeReason::LockfileChangeDetectionFailed => {
                 PackageChangeReason::LockfileChangeDetectionFailed(LockfileChangeDetectionFailed {
                     empty: false,
                 })
             }
-            turborepo_repository::change_mapper::PackageInclusionReason::All(
-                AllPackageChangeReason::GitRefNotFound { from_ref, to_ref },
-            ) => PackageChangeReason::GitRefNotFound(GitRefNotFound { from_ref, to_ref }),
-            turborepo_repository::change_mapper::PackageInclusionReason::All(
-                AllPackageChangeReason::LockfileChangedWithoutDetails,
-            ) => {
+
+            AllPackageChangeReason::GitRefNotFound { from_ref, to_ref } => {
+                PackageChangeReason::GitRefNotFound(GitRefNotFound { from_ref, to_ref })
+            }
+
+            AllPackageChangeReason::LockfileChangedWithoutDetails => {
                 PackageChangeReason::LockfileChangedWithoutDetails(LockfileChangedWithoutDetails {
                     empty: false,
                 })
             }
-            turborepo_repository::change_mapper::PackageInclusionReason::All(
-                AllPackageChangeReason::RootInternalDepChanged { root_internal_dep },
-            ) => PackageChangeReason::RootInternalDepChanged(RootInternalDepChanged {
-                root_internal_dep: root_internal_dep.to_string(),
-            }),
+            AllPackageChangeReason::RootInternalDepChanged { root_internal_dep } => {
+                PackageChangeReason::RootInternalDepChanged(RootInternalDepChanged {
+                    root_internal_dep: root_internal_dep.to_string(),
+                })
+            }
+        }
+    }
+}
+
+impl From<turborepo_repository::change_mapper::PackageInclusionReason> for PackageChangeReason {
+    fn from(value: turborepo_repository::change_mapper::PackageInclusionReason) -> Self {
+        match value {
+            turborepo_repository::change_mapper::PackageInclusionReason::All(reason) => {
+                PackageChangeReason::from(reason)
+            }
             turborepo_repository::change_mapper::PackageInclusionReason::RootTask { task } => {
                 PackageChangeReason::RootTask(RootTask {
                     task_name: task.to_string(),
