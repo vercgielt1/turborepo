@@ -13,6 +13,8 @@ use crate::{
     cli::{GenerateCommand, GeneratorCustomArgs},
 };
 
+const LATEST_TAG: &str = "latest";
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Unable to run generate - missing requirements (npx): {0}")]
@@ -23,15 +25,30 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 
-fn call_turbo_gen(command: &str, tag: &String, raw_args: &str) -> Result<i32, Error> {
+fn cache_latest() -> Result<i32, Error> {
+    let npx_path = which("npx").map_err(Error::NpxNotFound)?;
+    let mut npx = Command::new(npx_path);
+    npx.arg("--yes")
+        .arg(format!("@turbo/gen@{}", LATEST_TAG))
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+
+    let child = spawn_child(npx).map_err(Error::NpxFailed)?;
+    let exit_code = child.wait().map_err(Error::NpxFailed)?.code().unwrap_or(2);
+    Ok(exit_code)
+}
+
+fn call_turbo_gen(command: &str, tag: &Option<String>, raw_args: &str) -> Result<i32, Error> {
+    let version = tag.clone().map_or(String::new(), |t| format!("@{}", t));
     debug!(
-        "Running @turbo/gen@{} with command `{}` and args {:?}",
-        tag, command, raw_args
+        "Running @turbo/gen{} with command `{}` and args {:?}",
+        version, command, raw_args
     );
     let npx_path = which("npx").map_err(Error::NpxNotFound)?;
     let mut npx = Command::new(npx_path);
     npx.arg("--yes")
-        .arg(format!("@turbo/gen@{}", tag))
+        .arg(format!("@turbo/gen{}", version))
         .arg("raw")
         .arg(command)
         .args(["--json", raw_args])
@@ -44,7 +61,7 @@ fn call_turbo_gen(command: &str, tag: &String, raw_args: &str) -> Result<i32, Er
 }
 
 pub fn run(
-    tag: &String,
+    tag: &Option<String>,
     command: &Option<Box<GenerateCommand>>,
     args: &GeneratorCustomArgs,
     telemetry: CommandEventBuilder,
@@ -60,6 +77,24 @@ pub fn run(
         let raw_args = serde_json::to_string(&args)?;
         telemetry.track_generator_option("run");
         call_turbo_gen("run", tag, &raw_args)?;
+    }
+
+    // lazy refresh the latest version
+    if tag.is_none() || *tag == Some(LATEST_TAG.to_string()) {
+        match cache_latest() {
+            Ok(0) => {
+                debug!("Successfully cached latest version of @turbo/gen");
+            }
+            Ok(code) => {
+                debug!(
+                    "Failed to cache latest version of @turbo/gen with exit code {}",
+                    code
+                );
+            }
+            Err(e) => {
+                debug!("Failed to cache latest version of @turbo/gen: {}", e);
+            }
+        }
     }
 
     Ok(())

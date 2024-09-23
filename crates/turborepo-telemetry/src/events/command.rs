@@ -123,13 +123,16 @@ impl CommandEventBuilder {
         self
     }
 
-    pub fn track_generator_tag(&self, tag: &str) -> &Self {
-        self.track(Event {
-            key: "tag".to_string(),
-            value: tag.to_string(),
-            is_sensitive: EventType::NonSensitive,
-            send_in_ci: false,
-        });
+    pub fn track_generator_tag(&self, tag: &Option<String>) -> &Self {
+        if let Some(tag) = tag {
+            self.track(Event {
+                key: "tag".to_string(),
+                value: tag.to_string(),
+                is_sensitive: EventType::NonSensitive,
+                send_in_ci: false,
+            });
+        }
+
         self
     }
 

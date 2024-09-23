@@ -511,8 +511,10 @@ pub enum Command {
     /// Generate a new app / package
     #[clap(aliases = ["g", "gen"])]
     Generate {
-        #[clap(long, default_value_t = String::from("latest"), hide = true)]
-        tag: String,
+        /// the version of @turbo/gen to fetch (defaults to lazy fetching
+        /// latest)
+        #[clap(long, hide = true)]
+        tag: Option<String>,
         /// The name of the generator to run
         generator_name: Option<String>,
         /// Generator configuration file
@@ -2536,7 +2538,7 @@ mod test {
     #[test]
     fn test_parse_gen() {
         let default_gen = Command::Generate {
-            tag: "latest".to_string(),
+            tag: None,
             generator_name: None,
             config: None,
             root: None,
@@ -2563,7 +2565,7 @@ mod test {
             .unwrap(),
             Args {
                 command: Some(Command::Generate {
-                    tag: "latest".to_string(),
+                    tag: None,
                     generator_name: None,
                     config: None,
                     root: None,
@@ -2590,7 +2592,7 @@ mod test {
             .unwrap(),
             Args {
                 command: Some(Command::Generate {
-                    tag: "canary".to_string(),
+                    tag: Some("canary".to_string()),
                     generator_name: Some("my-generator".to_string()),
                     config: Some("~/custom-gen-config/gen".to_string()),
                     root: None,
