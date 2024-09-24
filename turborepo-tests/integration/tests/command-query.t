@@ -220,7 +220,7 @@ Query a file
   {
     "data": {
       "file": {
-        "path": "apps/my-app/package.json",
+        "path": "apps(\/|\\\\)my-app(\/|\\\\)package.json", (re)
         "contents": "{\n  \"name\": \"my-app\",\n  \"scripts\": {\n    \"build\": \"echo building\",\n    \"maybefails\": \"exit 4\"\n  },\n  \"dependencies\": {\n    \"util\": \"*\"\n  }\n}\n"
       }
     }
@@ -232,7 +232,7 @@ Get the file's package
   {
     "data": {
       "file": {
-        "path": "apps/my-app/package.json",
+        "path": "apps(\/|\\\\)my-app(\/|\\\\)package.json", (re)
         "package": {
           "name": "my-app"
         }
