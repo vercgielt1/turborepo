@@ -13,6 +13,7 @@ use crate::{
     commands::CommandBase,
     config::ConfigurationOptions,
     run::task_id::TaskId,
+    turbo_json::UIMode,
 };
 
 #[derive(Debug, Error)]
@@ -137,7 +138,7 @@ pub struct RunCacheOpts {
 impl<'a> From<OptsInputs<'a>> for RunCacheOpts {
     fn from(inputs: OptsInputs<'a>) -> Self {
         RunCacheOpts {
-            skip_reads: inputs.execution_args.force.flatten().is_some_and(|f| f),
+            skip_reads: inputs.config.force(),
             skip_writes: inputs.run_args.no_cache,
             task_output_logs_override: inputs.execution_args.output_logs,
         }
@@ -163,9 +164,10 @@ pub struct RunOpts {
     pub(crate) single_package: bool,
     pub log_prefix: ResolvedLogPrefix,
     pub log_order: ResolvedLogOrder,
-    pub summarize: Option<Option<bool>>,
+    pub summarize: bool,
     pub(crate) experimental_space_id: Option<String>,
     pub is_github_actions: bool,
+    pub ui_mode: UIMode,
 }
 
 impl RunOpts {
@@ -220,7 +222,7 @@ impl<'a> TryFrom<OptsInputs<'a>> for RunOpts {
             f => GraphOpts::File(f.to_string()),
         });
 
-        let (is_github_actions, log_order, log_prefix) = match inputs.execution_args.log_order {
+        let (is_github_actions, log_order, log_prefix) = match inputs.config.log_order() {
             LogOrder::Auto if turborepo_ci::Vendor::get_constant() == Some("GITHUB_ACTIONS") => (
                 true,
                 ResolvedLogOrder::Grouped,
@@ -247,7 +249,7 @@ impl<'a> TryFrom<OptsInputs<'a>> for RunOpts {
             tasks: inputs.execution_args.tasks.clone(),
             log_prefix,
             log_order,
-            summarize: inputs.run_args.summarize,
+            summarize: inputs.config.run_summary(),
             experimental_space_id: inputs
                 .run_args
                 .experimental_space_id
@@ -267,6 +269,7 @@ impl<'a> TryFrom<OptsInputs<'a>> for RunOpts {
             env_mode: inputs.config.env_mode(),
             cache_dir: inputs.config.cache_dir().into(),
             is_github_actions,
+            ui_mode: inputs.config.ui(),
         })
     }
 }
@@ -307,7 +310,7 @@ pub struct ScopeOpts {
     pub pkg_inference_root: Option<AnchoredSystemPathBuf>,
     pub global_deps: Vec<String>,
     pub filter_patterns: Vec<String>,
-    pub affected_range: Option<(Option<String>, String)>,
+    pub affected_range: Option<(Option<String>, Option<String>)>,
 }
 
 impl<'a> TryFrom<OptsInputs<'a>> for ScopeOpts {
@@ -324,7 +327,10 @@ impl<'a> TryFrom<OptsInputs<'a>> for ScopeOpts {
         let affected_range = inputs.execution_args.affected.then(|| {
             let scm_base = inputs.config.scm_base();
             let scm_head = inputs.config.scm_head();
-            (scm_base.map(|b| b.to_owned()), scm_head.to_string())
+            (
+                scm_base.map(|b| b.to_owned()),
+                scm_head.map(|h| h.to_string()),
+            )
         });
 
         Ok(Self {
@@ -362,8 +368,8 @@ impl<'a> From<OptsInputs<'a>> for CacheOpts {
 
         CacheOpts {
             cache_dir: inputs.config.cache_dir().into(),
-            skip_filesystem: inputs.execution_args.remote_only,
-            remote_cache_read_only: inputs.run_args.remote_cache_read_only,
+            skip_filesystem: inputs.config.remote_only(),
+            remote_cache_read_only: inputs.config.remote_cache_read_only(),
             workers: inputs.run_args.cache_workers,
             skip_remote,
             remote_cache_opts,
@@ -394,6 +400,7 @@ mod test {
     use crate::{
         cli::DryRunMode,
         opts::{Opts, RunCacheOpts, ScopeOpts},
+        turbo_json::UIMode,
     };
 
     #[derive(Default)]
@@ -499,10 +506,11 @@ mod test {
             only: opts_input.only,
             dry_run: opts_input.dry_run,
             graph: None,
+            ui_mode: UIMode::Stream,
             single_package: false,
             log_prefix: crate::opts::ResolvedLogPrefix::Task,
             log_order: crate::opts::ResolvedLogOrder::Stream,
-            summarize: None,
+            summarize: false,
             experimental_space_id: None,
             is_github_actions: false,
             daemon: None,
@@ -513,7 +521,9 @@ mod test {
             pkg_inference_root: None,
             global_deps: vec![],
             filter_patterns: opts_input.filter_patterns,
-            affected_range: opts_input.affected.map(|(base, head)| (Some(base), head)),
+            affected_range: opts_input
+                .affected
+                .map(|(base, head)| (Some(base), Some(head))),
         };
         let opts = Opts {
             run_opts,

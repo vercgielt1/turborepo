@@ -6,8 +6,10 @@ use std::{collections::HashMap, ffi::OsString, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use convert_case::{Case, Casing};
+use derive_setters::Setters;
 use env::{EnvVars, OverrideEnvVars};
 use file::{AuthFile, ConfigFile};
+use merge::Merge;
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use serde::Deserialize;
 use struct_iterable::Iterable;
@@ -15,9 +17,14 @@ use thiserror::Error;
 use turbo_json::TurboJsonReader;
 use turbopath::{AbsoluteSystemPath, AbsoluteSystemPathBuf};
 use turborepo_errors::TURBO_SITE;
+use turborepo_repository::package_graph::PackageName;
 
 pub use crate::turbo_json::{RawTurboJson, UIMode};
-use crate::{cli::EnvMode, commands::CommandBase, turbo_json::CONFIG_FILE};
+use crate::{
+    cli::{EnvMode, LogOrder},
+    commands::CommandBase,
+    turbo_json::CONFIG_FILE,
+};
 
 #[derive(Debug, Error, Diagnostic)]
 #[error("Environment variables should not be prefixed with \"{env_pipeline_delimiter}\"")]
@@ -160,6 +167,8 @@ pub enum Error {
     InvalidUploadTimeout(#[source] std::num::ParseIntError),
     #[error("TURBO_PREFLIGHT should be either 1 or 0.")]
     InvalidPreflight,
+    #[error("TURBO_LOG_ORDER should be one of: {0}")]
+    InvalidLogOrder(String),
     #[error(transparent)]
     #[diagnostic(transparent)]
     TurboJsonParseError(#[from] crate::turbo_json::parser::Error),
@@ -171,15 +180,8 @@ pub enum Error {
         #[source_code]
         text: NamedSource,
     },
-}
-
-macro_rules! create_builder {
-    ($func_name:ident, $property_name:ident, $type:ty) => {
-        pub fn $func_name(mut self, value: $type) -> Self {
-            self.override_config.$property_name = value;
-            self
-        }
-    };
+    #[error("Cannot load turbo.json for in {0} single package mode")]
+    InvalidTurboJsonLoad(PackageName),
 }
 
 const DEFAULT_API_URL: &str = "https://vercel.com/api";
@@ -190,8 +192,13 @@ const DEFAULT_UPLOAD_TIMEOUT: u64 = 60;
 // We intentionally don't derive Serialize so that different parts
 // of the code that want to display the config can tune how they
 // want to display and what fields they want to include.
-#[derive(Deserialize, Default, Debug, PartialEq, Eq, Clone, Iterable)]
+#[derive(Deserialize, Default, Debug, PartialEq, Eq, Clone, Iterable, Merge, Setters)]
 #[serde(rename_all = "camelCase")]
+// Generate setters for the builder type that set these values on its override_config field
+#[setters(
+    prefix = "with_",
+    generate_delegates(ty = "TurborepoConfigBuilder", field = "override_config")
+)]
 pub struct ConfigurationOptions {
     #[serde(alias = "apiurl")]
     #[serde(alias = "ApiUrl")]
@@ -230,6 +237,12 @@ pub struct ConfigurationOptions {
     // This is skipped as we never want this to be stored in a file
     #[serde(skip)]
     pub(crate) root_turbo_json_path: Option<AbsoluteSystemPathBuf>,
+    pub(crate) force: Option<bool>,
+    pub(crate) log_order: Option<LogOrder>,
+    pub(crate) remote_only: Option<bool>,
+    pub(crate) remote_cache_read_only: Option<bool>,
+    pub(crate) run_summary: Option<bool>,
+    pub(crate) allow_no_turbo_json: Option<bool>,
 }
 
 #[derive(Default)]
@@ -296,15 +309,19 @@ impl ConfigurationOptions {
             return UIMode::Stream;
         }
 
-        self.ui.unwrap_or(UIMode::Stream)
+        self.log_order()
+            .compatible_with_tui()
+            .then_some(self.ui)
+            .flatten()
+            .unwrap_or(UIMode::Stream)
     }
 
     pub fn scm_base(&self) -> Option<&str> {
         non_empty_str(self.scm_base.as_deref())
     }
 
-    pub fn scm_head(&self) -> &str {
-        non_empty_str(self.scm_head.as_deref()).unwrap_or("HEAD")
+    pub fn scm_head(&self) -> Option<&str> {
+        non_empty_str(self.scm_head.as_deref())
     }
 
     pub fn allow_no_package_manager(&self) -> bool {
@@ -329,49 +346,35 @@ impl ConfigurationOptions {
         })
     }
 
+    pub fn force(&self) -> bool {
+        self.force.unwrap_or_default()
+    }
+
+    pub fn log_order(&self) -> LogOrder {
+        self.log_order.unwrap_or_default()
+    }
+
+    pub fn remote_only(&self) -> bool {
+        self.remote_only.unwrap_or_default()
+    }
+
+    pub fn remote_cache_read_only(&self) -> bool {
+        self.remote_cache_read_only.unwrap_or_default()
+    }
+
+    pub fn run_summary(&self) -> bool {
+        self.run_summary.unwrap_or_default()
+    }
+
     pub fn root_turbo_json_path(&self, repo_root: &AbsoluteSystemPath) -> AbsoluteSystemPathBuf {
         self.root_turbo_json_path
             .clone()
             .unwrap_or_else(|| repo_root.join_component(CONFIG_FILE))
     }
-}
 
-macro_rules! create_set_if_empty {
-    ($func_name:ident, $property_name:ident, $type:ty) => {
-        fn $func_name(&mut self, value: &mut Option<$type>) {
-            if self.$property_name.is_none() {
-                if let Some(value) = value.take() {
-                    self.$property_name = Some(value);
-                }
-            }
-        }
-    };
-}
-
-// Private setters used only for construction
-impl ConfigurationOptions {
-    create_set_if_empty!(set_api_url, api_url, String);
-    create_set_if_empty!(set_login_url, login_url, String);
-    create_set_if_empty!(set_team_slug, team_slug, String);
-    create_set_if_empty!(set_team_id, team_id, String);
-    create_set_if_empty!(set_token, token, String);
-    create_set_if_empty!(set_signature, signature, bool);
-    create_set_if_empty!(set_enabled, enabled, bool);
-    create_set_if_empty!(set_preflight, preflight, bool);
-    create_set_if_empty!(set_timeout, timeout, u64);
-    create_set_if_empty!(set_ui, ui, UIMode);
-    create_set_if_empty!(set_allow_no_package_manager, allow_no_package_manager, bool);
-    create_set_if_empty!(set_daemon, daemon, bool);
-    create_set_if_empty!(set_env_mode, env_mode, EnvMode);
-    create_set_if_empty!(set_cache_dir, cache_dir, Utf8PathBuf);
-    create_set_if_empty!(set_scm_base, scm_base, String);
-    create_set_if_empty!(set_scm_head, scm_head, String);
-    create_set_if_empty!(set_spaces_id, spaces_id, String);
-    create_set_if_empty!(
-        set_root_turbo_json_path,
-        root_turbo_json_path,
-        AbsoluteSystemPathBuf
-    );
+    pub fn allow_no_turbo_json(&self) -> bool {
+        self.allow_no_turbo_json.unwrap_or_default()
+    }
 }
 
 // Maps Some("") to None to emulate how Go handles empty strings
@@ -428,30 +431,6 @@ impl TurborepoConfigBuilder {
             .unwrap_or_else(get_lowercased_env_vars)
     }
 
-    create_builder!(with_api_url, api_url, Option<String>);
-    create_builder!(with_login_url, login_url, Option<String>);
-    create_builder!(with_team_slug, team_slug, Option<String>);
-    create_builder!(with_team_id, team_id, Option<String>);
-    create_builder!(with_token, token, Option<String>);
-    create_builder!(with_signature, signature, Option<bool>);
-    create_builder!(with_enabled, enabled, Option<bool>);
-    create_builder!(with_preflight, preflight, Option<bool>);
-    create_builder!(with_timeout, timeout, Option<u64>);
-    create_builder!(with_ui, ui, Option<UIMode>);
-    create_builder!(
-        with_allow_no_package_manager,
-        allow_no_package_manager,
-        Option<bool>
-    );
-    create_builder!(with_daemon, daemon, Option<bool>);
-    create_builder!(with_env_mode, env_mode, Option<EnvMode>);
-    create_builder!(with_cache_dir, cache_dir, Option<Utf8PathBuf>);
-    create_builder!(
-        with_root_turbo_json_path,
-        root_turbo_json_path,
-        Option<AbsoluteSystemPathBuf>
-    );
-
     pub fn build(&self) -> Result<ConfigurationOptions, Error> {
         // Priority, from least significant to most significant:
         // - shared configuration (turbo.json)
@@ -483,27 +462,8 @@ impl TurborepoConfigBuilder {
         let config = sources.into_iter().try_fold(
             ConfigurationOptions::default(),
             |mut acc, current_source| {
-                let mut current_source_config = current_source.get_configuration_options(&acc)?;
-                acc.set_api_url(&mut current_source_config.api_url);
-                acc.set_login_url(&mut current_source_config.login_url);
-                acc.set_team_slug(&mut current_source_config.team_slug);
-                acc.set_team_id(&mut current_source_config.team_id);
-                acc.set_token(&mut current_source_config.token);
-                acc.set_signature(&mut current_source_config.signature);
-                acc.set_enabled(&mut current_source_config.enabled);
-                acc.set_preflight(&mut current_source_config.preflight);
-                acc.set_timeout(&mut current_source_config.timeout);
-                acc.set_spaces_id(&mut current_source_config.spaces_id);
-                acc.set_ui(&mut current_source_config.ui);
-                acc.set_allow_no_package_manager(
-                    &mut current_source_config.allow_no_package_manager,
-                );
-                acc.set_daemon(&mut current_source_config.daemon);
-                acc.set_env_mode(&mut current_source_config.env_mode);
-                acc.set_scm_base(&mut current_source_config.scm_base);
-                acc.set_scm_head(&mut current_source_config.scm_head);
-                acc.set_cache_dir(&mut current_source_config.cache_dir);
-                acc.set_root_turbo_json_path(&mut current_source_config.root_turbo_json_path);
+                let current_source_config = current_source.get_configuration_options(&acc)?;
+                acc.merge(current_source_config);
                 Ok(acc)
             },
         );

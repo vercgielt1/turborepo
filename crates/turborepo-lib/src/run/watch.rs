@@ -1,17 +1,17 @@
-use std::{cell::RefCell, collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    ops::DerefMut as _,
+    sync::{Arc, Mutex},
+};
 
 use futures::StreamExt;
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
-use tokio::{
-    select,
-    sync::{Mutex, Notify},
-    task::JoinHandle,
-};
+use tokio::{select, sync::Notify, task::JoinHandle};
 use tracing::{instrument, trace};
 use turborepo_repository::package_graph::PackageName;
 use turborepo_telemetry::events::command::CommandEventBuilder;
-use turborepo_ui::{tui, tui::AppSender};
+use turborepo_ui::sender::UISender;
 
 use crate::{
     cli::{Command, RunArgs},
@@ -46,15 +46,15 @@ impl ChangedPackages {
 }
 
 pub struct WatchClient {
-    run: Run,
+    run: Arc<Run>,
     watched_packages: HashSet<PackageName>,
     persistent_tasks_handle: Option<PersistentRunHandle>,
     connector: DaemonConnector,
     base: CommandBase,
     telemetry: CommandEventBuilder,
     handler: SignalHandler,
-    ui_sender: Option<AppSender>,
-    ui_handle: Option<JoinHandle<Result<(), tui::Error>>>,
+    ui_sender: Option<UISender>,
+    ui_handle: Option<JoinHandle<Result<(), turborepo_ui::Error>>>,
 }
 
 struct PersistentRunHandle {
@@ -99,6 +99,8 @@ pub enum Error {
     SignalInterrupt,
     #[error("package change error")]
     PackageChange(#[from] tonic::Status),
+    #[error(transparent)]
+    UI(#[from] turborepo_ui::Error),
     #[error("could not connect to UI thread")]
     UISend(String),
     #[error("cannot use root turbo.json at {0} with watch mode")]
@@ -128,13 +130,15 @@ impl WatchClient {
             execution_args: execution_args.clone(),
         });
 
-        let run = RunBuilder::new(new_base)?
-            .build(&handler, telemetry.clone())
-            .await?;
+        let run = Arc::new(
+            RunBuilder::new(new_base)?
+                .build(&handler, telemetry.clone())
+                .await?,
+        );
 
         let watched_packages = run.get_relevant_packages();
 
-        let (sender, handle) = run.start_experimental_ui()?.unzip();
+        let (ui_sender, ui_handle) = run.start_ui()?.unzip();
 
         let connector = DaemonConnector {
             can_start_server: true,
@@ -150,8 +154,8 @@ impl WatchClient {
             handler,
             telemetry,
             persistent_tasks_handle: None,
-            ui_sender: sender,
-            ui_handle: handle,
+            ui_sender,
+            ui_handle,
         })
     }
 
@@ -170,14 +174,14 @@ impl WatchClient {
         // We explicitly use a tokio::sync::Mutex here to avoid deadlocks.
         // If we used a std::sync::Mutex, we could deadlock by spinning the lock
         // and not yielding back to the tokio runtime.
-        let changed_packages = Mutex::new(RefCell::new(ChangedPackages::default()));
+        let changed_packages = Mutex::new(ChangedPackages::default());
         let notify_run = Arc::new(Notify::new());
         let notify_event = notify_run.clone();
 
         let event_fut = async {
             while let Some(event) = events.next().await {
                 let event = event?;
-                Self::handle_change_event(&changed_packages, event.event.unwrap()).await?;
+                Self::handle_change_event(&changed_packages, event.event.unwrap())?;
                 notify_event.notify_one();
             }
 
@@ -187,9 +191,13 @@ impl WatchClient {
         let run_fut = async {
             loop {
                 notify_run.notified().await;
-                let changed_packages_guard = changed_packages.lock().await;
-                if !changed_packages_guard.borrow().is_empty() {
-                    let changed_packages = changed_packages_guard.take();
+                let some_changed_packages = {
+                    let mut changed_packages_guard =
+                        changed_packages.lock().expect("poisoned lock");
+                    (!changed_packages_guard.is_empty())
+                        .then(|| std::mem::take(changed_packages_guard.deref_mut()))
+                };
+                if let Some(changed_packages) = some_changed_packages {
                     self.execute_run(changed_packages).await?;
                 }
             }
@@ -212,8 +220,8 @@ impl WatchClient {
     }
 
     #[instrument(skip(changed_packages))]
-    async fn handle_change_event(
-        changed_packages: &Mutex<RefCell<ChangedPackages>>,
+    fn handle_change_event(
+        changed_packages: &Mutex<ChangedPackages>,
         event: proto::package_change_event::Event,
     ) -> Result<(), Error> {
         // Should we recover here?
@@ -223,7 +231,7 @@ impl WatchClient {
             }) => {
                 let package_name = PackageName::from(package_name);
 
-                match changed_packages.lock().await.get_mut() {
+                match changed_packages.lock().expect("poisoned lock").deref_mut() {
                     ChangedPackages::All => {
                         // If we've already changed all packages, ignore
                     }
@@ -233,7 +241,7 @@ impl WatchClient {
                 }
             }
             proto::package_change_event::Event::RediscoverPackages(_) => {
-                *changed_packages.lock().await.get_mut() = ChangedPackages::All;
+                *changed_packages.lock().expect("poisoned lock") = ChangedPackages::All;
             }
             proto::package_change_event::Event::Error(proto::PackageChangeError { message }) => {
                 return Err(DaemonError::Unavailable(message).into());
@@ -282,7 +290,7 @@ impl WatchClient {
                 let signal_handler = self.handler.clone();
                 let telemetry = self.telemetry.clone();
 
-                let mut run = RunBuilder::new(new_base)?
+                let run = RunBuilder::new(new_base)?
                     .with_entrypoint_packages(packages)
                     .hide_prelude()
                     .build(&signal_handler, telemetry)
@@ -325,7 +333,8 @@ impl WatchClient {
                 self.run = RunBuilder::new(base.clone())?
                     .hide_prelude()
                     .build(&self.handler, self.telemetry.clone())
-                    .await?;
+                    .await?
+                    .into();
 
                 self.watched_packages = self.run.get_relevant_packages();
 
@@ -335,7 +344,9 @@ impl WatchClient {
                 {
                     // Shut down the tasks for the run
                     stopper.stop().await;
-                    run_task.abort();
+                    // Run should exit shortly after we stop all child tasks, wait for it to finish
+                    // to ensure all messages are flushed.
+                    let _ = run_task.await;
                 }
                 if let Some(sender) = &self.ui_sender {
                     let task_names = self.run.engine.tasks_with_command(&self.run.pkg_dep_graph);
@@ -349,7 +360,7 @@ impl WatchClient {
                         self.persistent_tasks_handle.is_none(),
                         "persistent handle should be empty before creating a new one"
                     );
-                    let mut persistent_run = self.run.create_run_for_persistent_tasks();
+                    let persistent_run = self.run.create_run_for_persistent_tasks();
                     let ui_sender = self.ui_sender.clone();
                     // If we have persistent tasks, we run them on a separate thread
                     // since persistent tasks don't finish
@@ -361,7 +372,7 @@ impl WatchClient {
                     });
 
                     // But we still run the regular tasks blocking
-                    let mut non_persistent_run = self.run.create_run_without_persistent_tasks();
+                    let non_persistent_run = self.run.create_run_without_persistent_tasks();
                     Ok(non_persistent_run.run(self.ui_sender.clone(), true).await?)
                 } else {
                     Ok(self.run.run(self.ui_sender.clone(), true).await?)
