@@ -4,7 +4,6 @@ use std::{
 };
 
 use itertools::Itertools;
-use petgraph::visit::{depth_first_search, Reversed};
 use serde::Serialize;
 use tracing::debug;
 use turbopath::{
@@ -259,8 +258,11 @@ impl PackageGraph {
     /// dependencies(a) = {b, c}
     #[allow(dead_code)]
     pub fn dependencies<'a>(&'a self, node: &PackageNode) -> HashSet<&'a PackageNode> {
-        let mut dependencies =
-            self.transitive_closure_inner(Some(node), petgraph::Direction::Outgoing);
+        let mut dependencies = turborepo_graph_utils::transitive_closure(
+            &self.graph,
+            self.node_lookup.get(node).cloned(),
+            petgraph::Direction::Outgoing,
+        );
         // Add in all root dependencies as they're implied dependencies for every
         // package in the graph.
         dependencies.extend(self.root_internal_dependencies());
@@ -281,7 +283,11 @@ impl PackageGraph {
         let mut dependents = if self.root_internal_dependencies().contains(node) {
             return self.graph.node_weights().collect();
         } else {
-            self.transitive_closure_inner(Some(node), petgraph::Direction::Incoming)
+            turborepo_graph_utils::transitive_closure(
+                &self.graph,
+                self.node_lookup.get(node).cloned(),
+                petgraph::Direction::Incoming,
+            )
         };
         dependents.remove(node);
         dependents
@@ -321,11 +327,48 @@ impl PackageGraph {
             .collect()
     }
 
+    /// Provides a path from the root package to package
+    ///
+    /// Currently only provides the shortest path as calculating all paths can
+    /// be O(n!)
+    pub fn root_internal_dependency_explanation(
+        &self,
+        package: &WorkspacePackage,
+    ) -> Option<String> {
+        let from = *self
+            .node_lookup
+            .get(&PackageNode::Workspace(PackageName::Root))
+            .expect("all graphs should have a root");
+        let to = *self
+            .node_lookup
+            .get(&PackageNode::Workspace(package.name.clone()))?;
+        let (_cost, path) =
+            petgraph::algo::astar(&self.graph, from, |node| node == to, |_| 1, |_| 1)?;
+        Some(
+            self.path_display(&path)
+                .expect("path should only contain valid node indices"),
+        )
+    }
+
+    fn path_display(&self, path: &[petgraph::graph::NodeIndex]) -> Option<String> {
+        let mut package_names = Vec::with_capacity(path.len());
+        for index in path {
+            let node = self.graph.node_weight(*index)?;
+            let name = node.as_package_name().to_string();
+            package_names.push(name);
+        }
+
+        Some(package_names.join(" -> "))
+    }
+
     fn root_internal_dependencies(&self) -> HashSet<&PackageNode> {
         // We cannot call self.dependencies(&PackageNode::Workspace(PackageName::Root))
         // as it will infinitely recurse.
-        let mut dependencies = self.transitive_closure_inner(
-            Some(&PackageNode::Workspace(PackageName::Root)),
+        let mut dependencies = turborepo_graph_utils::transitive_closure(
+            &self.graph,
+            self.node_lookup
+                .get(&PackageNode::Workspace(PackageName::Root))
+                .cloned(),
             petgraph::Direction::Outgoing,
         );
         dependencies.remove(&PackageNode::Workspace(PackageName::Root));
@@ -341,39 +384,13 @@ impl PackageGraph {
         &'a self,
         nodes: I,
     ) -> HashSet<&'a PackageNode> {
-        self.transitive_closure_inner(nodes, petgraph::Direction::Outgoing)
-    }
-
-    fn transitive_closure_inner<'a, 'b, I: IntoIterator<Item = &'b PackageNode>>(
-        &'a self,
-        nodes: I,
-        direction: petgraph::Direction,
-    ) -> HashSet<&'a PackageNode> {
-        let indices = nodes
-            .into_iter()
-            .filter_map(|node| self.node_lookup.get(node))
-            .copied();
-
-        let mut visited = HashSet::new();
-
-        let visitor = |event| {
-            if let petgraph::visit::DfsEvent::Discover(n, _) = event {
-                visited.insert(
-                    self.graph
-                        .node_weight(n)
-                        .expect("node index found during dfs doesn't exist"),
-                );
-            }
-        };
-
-        match direction {
-            petgraph::Direction::Outgoing => depth_first_search(&self.graph, indices, visitor),
-            petgraph::Direction::Incoming => {
-                depth_first_search(Reversed(&self.graph), indices, visitor)
-            }
-        };
-
-        visited
+        turborepo_graph_utils::transitive_closure(
+            &self.graph,
+            nodes
+                .into_iter()
+                .flat_map(|node| self.node_lookup.get(node).cloned()),
+            petgraph::Direction::Outgoing,
+        )
     }
 
     pub fn transitive_external_dependencies<'a, I: IntoIterator<Item = &'a PackageName>>(

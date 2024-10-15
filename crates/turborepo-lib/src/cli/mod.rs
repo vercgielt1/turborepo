@@ -8,7 +8,7 @@ use clap::{
 };
 use clap_complete::{generate, Shell};
 pub use error::Error;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error, log::warn};
 use turbopath::AbsoluteSystemPathBuf;
 use turborepo_api_client::AnonAPIClient;
@@ -17,19 +17,19 @@ use turborepo_telemetry::{
     events::{command::CommandEventBuilder, generic::GenericEventBuilder, EventBuilder, EventType},
     init_telemetry, track_usage, TelemetryHandle,
 };
-use turborepo_ui::{GREY, UI};
+use turborepo_ui::{ColorConfig, GREY};
 
 use crate::{
     cli::error::print_potential_tasks,
     commands::{
-        bin, config, daemon, generate, link, login, logout, ls, prune, run, scan, telemetry,
+        bin, config, daemon, generate, link, login, logout, ls, prune, query, run, scan, telemetry,
         unlink, CommandBase,
     },
     get_version,
     run::watch::WatchClient,
     shim::TurboState,
     tracing::TurboSubscriber,
-    turbo_json::UI as ConfigUI,
+    turbo_json::UIMode,
 };
 
 mod error;
@@ -87,7 +87,7 @@ impl From<OutputLogsMode> for turborepo_ui::tui::event::OutputLogs {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, ValueEnum, Deserialize, Eq)]
 pub enum LogOrder {
     #[serde(rename = "auto")]
     Auto,
@@ -136,7 +136,9 @@ impl Display for DryRunMode {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, ValueEnum)]
+#[derive(
+    Copy, Clone, Debug, Default, PartialEq, Serialize, ValueEnum, Deserialize, Eq, Deserializable,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum EnvMode {
     Loose,
@@ -183,7 +185,7 @@ pub struct Args {
     pub heap: Option<String>,
     /// Specify whether to use the streaming UI or TUI
     #[clap(long, global = true, value_enum)]
-    pub ui: Option<ConfigUI>,
+    pub ui: Option<UIMode>,
     /// Override the login endpoint
     #[clap(long, global = true, value_parser)]
     pub login: Option<String>,
@@ -220,12 +222,22 @@ pub struct Args {
     /// should be used.
     #[clap(long, global = true)]
     pub dangerously_disable_package_manager_check: bool,
+    #[clap(long = "experimental-allow-no-turbo-json", hide = true, global = true)]
+    pub allow_no_turbo_json: bool,
+    /// Use the `turbo.json` located at the provided path instead of one at the
+    /// root of the repository.
+    #[clap(long, global = true)]
+    pub root_turbo_json: Option<Utf8PathBuf>,
     #[clap(flatten, next_help_heading = "Run Arguments")]
-    pub run_args: Option<RunArgs>,
+    // DO NOT MAKE THIS VISIBLE
+    // This is explicitly set to None in `run`
+    run_args: Option<RunArgs>,
     // This should be inside `RunArgs` but clap currently has a bug
     // around nested flattened optional args: https://github.com/clap-rs/clap/issues/4697
     #[clap(flatten)]
-    pub execution_args: Option<ExecutionArgs>,
+    // DO NOT MAKE THIS VISIBLE
+    // Instead use the getter method execution_args()
+    execution_args: Option<ExecutionArgs>,
     #[clap(subcommand)]
     pub command: Option<Command>,
 }
@@ -280,6 +292,25 @@ pub enum DaemonCommand {
     },
     /// Shows the daemon logs
     Logs,
+}
+
+#[derive(Copy, Clone, Debug, Default, ValueEnum, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    /// Output in a human-readable format
+    #[default]
+    Pretty,
+    /// Output in JSON format for direct parsing
+    Json,
+}
+
+impl fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            OutputFormat::Pretty => "pretty",
+            OutputFormat::Json => "json",
+        })
+    }
 }
 
 #[derive(Subcommand, Copy, Clone, Debug, PartialEq)]
@@ -386,20 +417,6 @@ impl Args {
         clap_args
     }
 
-    pub fn get_tasks(&self) -> &[String] {
-        match &self.command {
-            Some(Command::Run {
-                run_args: _,
-                execution_args: box ExecutionArgs { tasks, .. },
-            }) => tasks,
-            _ => self
-                .execution_args
-                .as_ref()
-                .map(|execution_args| execution_args.tasks.as_slice())
-                .unwrap_or(&[]),
-        }
-    }
-
     pub fn track(&self, tel: &GenericEventBuilder) {
         // track usage only
         track_usage!(tel, self.skip_infer, |val| val);
@@ -436,6 +453,24 @@ impl Args {
                 verbosity,
                 turborepo_telemetry::events::EventType::NonSensitive,
             );
+        }
+    }
+
+    /// Fetch the run args supplied to the command
+    pub fn run_args(&self) -> Option<&RunArgs> {
+        if let Some(Command::Run { run_args, .. }) = &self.command {
+            Some(run_args)
+        } else {
+            self.run_args.as_ref()
+        }
+    }
+
+    /// Fetch the execution args supplied to the command
+    pub fn execution_args(&self) -> Option<&ExecutionArgs> {
+        if let Some(Command::Run { execution_args, .. }) = &self.command {
+            Some(execution_args)
+        } else {
+            self.execution_args.as_ref()
         }
     }
 }
@@ -492,6 +527,10 @@ pub enum Command {
     Config,
     /// EXPERIMENTAL: List packages in your monorepo.
     Ls {
+        /// Show only packages that are affected by changes between
+        /// the current branch and `main`
+        #[clap(long, group = "scope-filter-group")]
+        affected: bool,
         /// Use the given selector to specify package(s) to act as
         /// entry points. The syntax mirrors pnpm's syntax, and
         /// additional documentation and examples can be found in
@@ -501,6 +540,9 @@ pub enum Command {
         /// Get insight into a specific package, such as
         /// its dependencies and tasks
         packages: Vec<String>,
+        /// Output format
+        #[clap(long, value_enum)]
+        output: Option<OutputFormat>,
     },
     /// Link your local directory to a Vercel organization and enable remote
     /// caching.
@@ -559,6 +601,13 @@ pub enum Command {
         run_args: Box<RunArgs>,
         #[clap(flatten)]
         execution_args: Box<ExecutionArgs>,
+    },
+    /// Query your monorepo using GraphQL. If no query is provided, spins up a
+    /// GraphQL server with GraphiQL.
+    #[clap(hide = true)]
+    Query {
+        /// The query to run, either a file path or a query string
+        query: Option<String>,
     },
     Watch(Box<ExecutionArgs>),
     /// Unlink the current directory from your Vercel organization and disable
@@ -660,7 +709,7 @@ ArgGroup::new("scope-filter-group").multiple(true).required(false),
 ])]
 pub struct ExecutionArgs {
     /// Override the filesystem cache directory.
-    #[clap(long, value_parser = path_non_empty, env = "TURBO_CACHE_DIR")]
+    #[clap(long, value_parser = path_non_empty)]
     pub cache_dir: Option<Utf8PathBuf>,
     /// Limit the concurrency of task execution. Use 1 for serial (i.e.
     /// one-at-a-time) execution.
@@ -674,7 +723,7 @@ pub struct ExecutionArgs {
     #[clap(long)]
     pub single_package: bool,
     /// Ignore the existing cache (to force execution)
-    #[clap(long, env = "TURBO_FORCE", default_missing_value = "true")]
+    #[clap(long, default_missing_value = "true")]
     pub force: Option<Option<bool>>,
     /// Specify whether or not to do framework inference for tasks
     #[clap(long, value_name = "BOOL", action = ArgAction::Set, default_value = "true", default_missing_value = "true", num_args = 0..=1)]
@@ -695,6 +744,11 @@ pub struct ExecutionArgs {
     #[clap(short = 'F', long, group = "scope-filter-group")]
     pub filter: Vec<String>,
 
+    /// Run only tasks that are affected by changes between
+    /// the current branch and `main`
+    #[clap(long, group = "scope-filter-group", conflicts_with = "filter")]
+    pub affected: bool,
+
     /// Set type of process output logging. Use "full" to show
     /// all output. Use "hash-only" to show only turbo-computed
     /// task hashes. Use "new-only" to show only new output with
@@ -706,8 +760,8 @@ pub struct ExecutionArgs {
     /// output as soon as it is available. Use "grouped" to
     /// show output when a command has finished execution. Use "auto" to let
     /// turbo decide based on its own heuristics. (default auto)
-    #[clap(long, env = "TURBO_LOG_ORDER", value_enum, default_value_t = LogOrder::Auto)]
-    pub log_order: LogOrder,
+    #[clap(long, value_enum)]
+    pub log_order: Option<LogOrder>,
     /// Only executes the tasks specified, does not execute parent tasks.
     #[clap(long)]
     pub only: bool,
@@ -715,8 +769,8 @@ pub struct ExecutionArgs {
     pub pkg_inference_root: Option<String>,
     /// Ignore the local filesystem cache for all tasks. Only
     /// allow reading and caching artifacts using the remote cache.
-    #[clap(long, env = "TURBO_REMOTE_ONLY", value_name = "BOOL", action = ArgAction::Set, default_value = "false", default_missing_value = "true", num_args = 0..=1)]
-    pub remote_only: bool,
+    #[clap(long, default_missing_value = "true")]
+    pub remote_only: Option<Option<bool>>,
     /// Use "none" to remove prefixes from task logs. Use "task" to get task id
     /// prefixing. Use "auto" to let turbo decide how to prefix the logs
     /// based on the execution environment. In most cases this will be the same
@@ -735,6 +789,11 @@ pub struct ExecutionArgs {
 }
 
 impl ExecutionArgs {
+    pub fn remote_only(&self) -> Option<bool> {
+        let remote_only = self.remote_only?;
+        Some(remote_only.unwrap_or(true))
+    }
+
     fn track(&self, telemetry: &CommandEventBuilder) {
         // default to false
         track_usage!(telemetry, self.framework_inference, |val: bool| !val);
@@ -742,7 +801,7 @@ impl ExecutionArgs {
         track_usage!(telemetry, self.continue_execution, |val| val);
         track_usage!(telemetry, self.single_package, |val| val);
         track_usage!(telemetry, self.only, |val| val);
-        track_usage!(telemetry, self.remote_only, |val| val);
+        track_usage!(telemetry, self.remote_only().unwrap_or_default(), |val| val);
         track_usage!(telemetry, &self.cache_dir, Option::is_some);
         track_usage!(telemetry, &self.force, Option::is_some);
         track_usage!(telemetry, &self.pkg_inference_root, Option::is_some);
@@ -767,8 +826,8 @@ impl ExecutionArgs {
             telemetry.track_arg_value("output-logs", output_logs, EventType::NonSensitive);
         }
 
-        if self.log_order != LogOrder::default() {
-            telemetry.track_arg_value("log-order", self.log_order, EventType::NonSensitive);
+        if let Some(log_order) = self.log_order {
+            telemetry.track_arg_value("log-order", log_order, EventType::NonSensitive);
         }
 
         if self.log_prefix != LogPrefix::default() {
@@ -806,15 +865,15 @@ pub struct RunArgs {
 
     // clap does not have negation flags such as --daemon and --no-daemon
     // so we need to use a group to enforce that only one of them is set.
-    // we set the long name as [no-]daemon with an alias of daemon such
-    // that we can merge the help text together for both flags
     // -----------------------
-    /// Force turbo to either use or not use the local daemon. If unset
+    /// Force turbo to use the local daemon. If unset
     /// turbo will use the default detection logic.
-    #[clap(long = "[no-]daemon", alias = "daemon", group = "daemon-group")]
+    #[clap(long, group = "daemon-group")]
     pub daemon: bool,
 
-    #[clap(long, group = "daemon-group", hide = true)]
+    /// Force turbo to not use the local daemon. If unset
+    /// turbo will use the default detection logic.
+    #[clap(long, group = "daemon-group")]
     pub no_daemon: bool,
 
     /// File to write turbo's performance profile output into.
@@ -827,10 +886,10 @@ pub struct RunArgs {
     #[clap(long, value_parser=NonEmptyStringValueParser::new(), conflicts_with = "profile")]
     pub anon_profile: Option<String>,
     /// Treat remote cache as read only
-    #[clap(long, env = "TURBO_REMOTE_CACHE_READ_ONLY", value_name = "BOOL", action = ArgAction::Set, default_value = "false", default_missing_value = "true", num_args = 0..=1)]
-    pub remote_cache_read_only: bool,
+    #[clap(long, default_missing_value = "true")]
+    pub remote_cache_read_only: Option<Option<bool>>,
     /// Generate a summary of the turbo run
-    #[clap(long, env = "TURBO_RUN_SUMMARY", default_missing_value = "true")]
+    #[clap(long, default_missing_value = "true")]
     pub summarize: Option<Option<bool>>,
 
     // Pass a string to enable posting Run Summaries to Vercel
@@ -853,7 +912,7 @@ impl Default for RunArgs {
             no_daemon: false,
             profile: None,
             anon_profile: None,
-            remote_cache_read_only: false,
+            remote_cache_read_only: None,
             summarize: None,
             experimental_space_id: None,
             parallel: false,
@@ -883,13 +942,27 @@ impl RunArgs {
         }
     }
 
+    pub fn remote_cache_read_only(&self) -> Option<bool> {
+        let remote_cache_read_only = self.remote_cache_read_only?;
+        Some(remote_cache_read_only.unwrap_or(true))
+    }
+
+    pub fn summarize(&self) -> Option<bool> {
+        let summarize = self.summarize?;
+        Some(summarize.unwrap_or(true))
+    }
+
     pub fn track(&self, telemetry: &CommandEventBuilder) {
         // default to true
         track_usage!(telemetry, self.no_cache, |val| val);
         track_usage!(telemetry, self.daemon, |val| val);
         track_usage!(telemetry, self.no_daemon, |val| val);
         track_usage!(telemetry, self.parallel, |val| val);
-        track_usage!(telemetry, self.remote_cache_read_only, |val| val);
+        track_usage!(
+            telemetry,
+            self.remote_cache_read_only().unwrap_or_default(),
+            |val| val
+        );
 
         // default to None
         track_usage!(telemetry, &self.profile, Option::is_some);
@@ -955,14 +1028,15 @@ impl Display for LogPrefix {
 /// local turbo, such as in the case where `TURBO_BINARY_PATH` is set,
 /// we use it here to modify clap's arguments.
 /// * `logger`: The logger to use for the run.
-/// * `ui`: The UI to use for the run.
+/// * `color_config`: The color configuration to use for the run, i.e. whether
+///   we should colorize output.
 ///
 /// returns: Result<Payload, Error>
 #[tokio::main]
 pub async fn run(
     repo_state: Option<RepoState>,
     #[allow(unused_variables)] logger: &TurboSubscriber,
-    ui: UI,
+    color_config: ColorConfig,
 ) -> Result<i32, Error> {
     // TODO: remove mutability from this function
     let mut cli_args = Args::new();
@@ -974,7 +1048,7 @@ pub async fn run(
     // initialize telemetry
     match AnonAPIClient::new("https://telemetry.vercel.com", 250, version) {
         Ok(anonymous_api_client) => {
-            let handle = init_telemetry(anonymous_api_client, ui);
+            let handle = init_telemetry(anonymous_api_client, color_config);
             match handle {
                 Ok(h) => telemetry_handle = Some(h),
                 Err(error) => {
@@ -988,7 +1062,8 @@ pub async fn run(
     }
 
     let should_print_version = env::var("TURBO_PRINT_VERSION_DISABLED")
-        .map_or(true, |disable| !matches!(disable.as_str(), "1" | "true"));
+        .map_or(true, |disable| !matches!(disable.as_str(), "1" | "true"))
+        && !turborepo_ci::is_ci();
 
     if should_print_version {
         eprintln!("{}\n", GREY.apply_to(format!("turbo {}", get_version())));
@@ -999,7 +1074,7 @@ pub async fn run(
     let mut command = if let Some(command) = mem::take(&mut cli_args.command) {
         command
     } else {
-        let run_args = cli_args.run_args.take().unwrap_or_default();
+        let run_args = cli_args.run_args.clone().unwrap_or_default();
         let execution_args = cli_args
             .execution_args
             // We clone instead of take as take would leave the command base a copy of cli_args
@@ -1098,7 +1173,7 @@ pub async fn run(
             CommandEventBuilder::new("daemon")
                 .with_parent(&root_telemetry)
                 .track_call();
-            let base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
+            let base = CommandBase::new(cli_args.clone(), repo_root, version, color_config);
 
             match command {
                 Some(command) => daemon::daemon_client(command, &base).await,
@@ -1131,13 +1206,13 @@ pub async fn run(
         Command::Telemetry { command } => {
             let event = CommandEventBuilder::new("telemetry").with_parent(&root_telemetry);
             event.track_call();
-            let mut base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
+            let mut base = CommandBase::new(cli_args.clone(), repo_root, version, color_config);
             let child_event = event.child();
             telemetry::configure(command, &mut base, child_event);
             Ok(0)
         }
         Command::Scan {} => {
-            let base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
+            let base = CommandBase::new(cli_args.clone(), repo_root, version, color_config);
             if scan::run(base).await {
                 Ok(0)
             } else {
@@ -1145,19 +1220,27 @@ pub async fn run(
             }
         }
         Command::Config => {
-            let base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
+            let base = CommandBase::new(cli_args.clone(), repo_root, version, color_config);
             config::run(base).await?;
             Ok(0)
         }
-        Command::Ls { filter, packages } => {
+        Command::Ls {
+            affected,
+            filter,
+            packages,
+            output,
+        } => {
             warn!("ls command is experimental and may change in the future");
             let event = CommandEventBuilder::new("info").with_parent(&root_telemetry);
 
             event.track_call();
+            let affected = *affected;
+            let output = *output;
             let filter = filter.clone();
             let packages = packages.clone();
-            let base = CommandBase::new(cli_args, repo_root, version, ui);
-            ls::run(base, packages, event, filter).await?;
+            let base = CommandBase::new(cli_args, repo_root, version, color_config);
+
+            ls::run(base, packages, event, filter, affected, output).await?;
 
             Ok(0)
         }
@@ -1175,7 +1258,7 @@ pub async fn run(
 
             let modify_gitignore = !*no_gitignore;
             let to = *target;
-            let mut base = CommandBase::new(cli_args, repo_root, version, ui);
+            let mut base = CommandBase::new(cli_args, repo_root, version, color_config);
 
             if let Err(err) = link::link(&mut base, modify_gitignore, to).await {
                 error!("error: {}", err.to_string())
@@ -1188,7 +1271,7 @@ pub async fn run(
             event.track_call();
             let invalidate = *invalidate;
 
-            let mut base = CommandBase::new(cli_args, repo_root, version, ui);
+            let mut base = CommandBase::new(cli_args, repo_root, version, color_config);
             let event_child = event.child();
 
             logout::logout(&mut base, invalidate, event_child).await?;
@@ -1206,7 +1289,7 @@ pub async fn run(
             let sso_team = sso_team.clone();
             let force = *force;
 
-            let mut base = CommandBase::new(cli_args, repo_root, version, ui);
+            let mut base = CommandBase::new(cli_args, repo_root, version, color_config);
             let event_child = event.child();
 
             if let Some(sso_team) = sso_team {
@@ -1227,7 +1310,7 @@ pub async fn run(
             }
 
             let from = *target;
-            let mut base = CommandBase::new(cli_args, repo_root, version, ui);
+            let mut base = CommandBase::new(cli_args, repo_root, version, color_config);
 
             unlink::unlink(&mut base, from)?;
 
@@ -1240,11 +1323,11 @@ pub async fn run(
             let event = CommandEventBuilder::new("run").with_parent(&root_telemetry);
             event.track_call();
 
-            let base = CommandBase::new(cli_args.clone(), repo_root, version, ui);
+            let base = CommandBase::new(cli_args.clone(), repo_root, version, color_config);
 
             if execution_args.tasks.is_empty() {
                 print_potential_tasks(base, event).await?;
-                process::exit(1);
+                return Ok(1);
             }
 
             if let Some((file_path, include_args)) = run_args.profile_file_and_include_args() {
@@ -1260,10 +1343,21 @@ pub async fn run(
             })?;
             Ok(exit_code)
         }
+        Command::Query { query } => {
+            warn!("query command is experimental and may change in the future");
+            let query = query.clone();
+            let event = CommandEventBuilder::new("query").with_parent(&root_telemetry);
+            event.track_call();
+            let base = CommandBase::new(cli_args, repo_root, version, color_config);
+
+            let query = query::run(base, event, query).await?;
+
+            Ok(query)
+        }
         Command::Watch(_) => {
             let event = CommandEventBuilder::new("watch").with_parent(&root_telemetry);
             event.track_call();
-            let base = CommandBase::new(cli_args, repo_root, version, ui);
+            let base = CommandBase::new(cli_args, repo_root, version, color_config);
 
             let mut client = WatchClient::new(base, event).await?;
             client.start().await?;
@@ -1285,7 +1379,7 @@ pub async fn run(
                 .unwrap_or_default();
             let docker = *docker;
             let output_dir = output_dir.clone();
-            let base = CommandBase::new(cli_args, repo_root, version, ui);
+            let base = CommandBase::new(cli_args, repo_root, version, color_config);
             let event_child = event.child();
             prune::prune(&base, &scope, docker, &output_dir, event_child).await?;
             Ok(0)
@@ -1299,11 +1393,6 @@ pub async fn run(
         }
     };
 
-    if cli_result.is_err() {
-        root_telemetry.track_failure();
-    } else {
-        root_telemetry.track_success();
-    }
     root_telemetry.track_end();
     match telemetry_handle {
         Some(handle) => handle.close_with_timeout().await,
@@ -1341,7 +1430,7 @@ mod test {
     fn get_default_execution_args() -> ExecutionArgs {
         ExecutionArgs {
             output_logs: None,
-            remote_only: false,
+            remote_only: None,
             framework_inference: true,
             ..ExecutionArgs::default()
         }
@@ -1852,7 +1941,7 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    log_order: LogOrder::Stream,
+                    log_order: Some(LogOrder::Stream),
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -1867,7 +1956,7 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    log_order: LogOrder::Grouped,
+                    log_order: Some(LogOrder::Grouped),
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -1927,7 +2016,6 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    log_order: LogOrder::Auto,
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -1977,7 +2065,7 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    remote_only: false,
+                    remote_only: None,
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -1992,7 +2080,7 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    remote_only: true,
+                    remote_only: Some(Some(true)),
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -2007,7 +2095,7 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    remote_only: true,
+                    remote_only: Some(Some(true)),
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -2022,7 +2110,7 @@ mod test {
             command: Some(Command::Run {
                 execution_args: Box::new(ExecutionArgs {
                     tasks: vec!["build".to_string()],
-                    remote_only: false,
+                    remote_only: Some(Some(false)),
                     ..get_default_execution_args()
                 }),
                 run_args: Box::new(get_default_run_args())
@@ -2558,5 +2646,16 @@ mod test {
             .unwrap()
             .dangerously_disable_package_manager_check
         );
+    }
+
+    #[test]
+    fn test_prevent_affected_and_filter() {
+        assert!(
+            Args::try_parse_from(["turbo", "run", "build", "--affected", "--filter", "foo"])
+                .is_err(),
+        );
+        assert!(Args::try_parse_from(["turbo", "build", "--affected", "--filter", "foo"]).is_err(),);
+        assert!(Args::try_parse_from(["turbo", "build", "--filter", "foo", "--affected"]).is_err(),);
+        assert!(Args::try_parse_from(["turbo", "ls", "--filter", "foo", "--affected"]).is_err(),);
     }
 }
