@@ -174,6 +174,7 @@ impl File {
                     run: self.run.clone(),
                     name: name.clone(),
                 })
+                .sorted_by(|a, b| a.name.cmp(&b.name))
                 .collect()),
             Ok(Some(PackageMapping::Package(package))) => {
                 let node: PackageNode = PackageNode::Workspace(package.name.clone());
