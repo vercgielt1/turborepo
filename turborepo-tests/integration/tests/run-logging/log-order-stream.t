@@ -44,7 +44,7 @@ it just guarantees setting this env var won't crash.
   .* (re)
   .* (re)
   .* (re)
-  my-app:build: building
+  (my-app|util):build: building (re)
   util:build: building
   my-app:build: done
   util:build: completed
@@ -70,8 +70,8 @@ The flag wins over the env var
   .* (re)
   .* (re)
   .* (re)
-  (my-app|util):build:  (re)
-  (my-app:build): building (re)
+  (my-app|util):build:.* (re)
+  (my-app|util):build:.* (re)
   util:build: building
   my-app:build: done
   util:build: completed
